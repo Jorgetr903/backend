@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Subir Recurso</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 40px; }
+    label { display: block; margin-top: 10px; }
+    input, select, textarea { width: 300px; padding: 5px; margin-top: 5px; }
+    button { margin-top: 15px; padding: 10px 20px; }
+  </style>
+</head>
+<body>
+  <h2>Subir Recurso</h2>
+  <form id="uploadForm" enctype="multipart/form-data">
+    <label>Título:</label>
+    <input type="text" name="titulo" required>
+
+    <label>Descripción:</label>
+    <textarea name="descripcion" rows="3"></textarea>
+
+    <label>Tipo:</label>
+    <select name="tipo" required>
+      <option value="formacion">Formación</option>
+      <option value="actividad">Actividad</option>
+      <option value="dinamica">Dinámica</option>
+    </select>
+
+    <label>Año (solo actividades):</label>
+    <input type="text" name="anio">
+
+    <label>Momento (solo actividades):</label>
+    <select name="momento">
+      <option value="">--Ninguno--</option>
+      <option value="Mañana">Mañana</option>
+      <option value="Tarde">Tarde</option>
+      <option value="Velada">Velada</option>
+      <option value="Olimpiada">Olimpiada</option>
+    </select>
+
+    <label>Tema (solo dinámicas):</label>
+    <input type="text" name="tema">
+
+    <label>Grupo (solo dinámicas):</label>
+    <select name="grupo">
+      <option value="">--Ninguno--</option>
+      <option value="Pequeños">Pequeños</option>
+      <option value="Medianos">Medianos</option>
+      <option value="Mayores">Mayores</option>
+    </select>
+
+    <label>Archivo (PDF, video o audio):</label>
+    <input type="file" name="archivo" required>
+
+    <button type="submit">Subir Recurso</button>
+  </form>
+
+  <div id="mensaje" style="margin-top:20px; color: green;"></div>
+
+  <script>
+    const form = document.getElementById('uploadForm');
+    const mensaje = document.getElementById('mensaje');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const data = new FormData(form);
+
+      try {
+        const res = await fetch('/api/recursos/subir', {
+          method: 'POST',
+          body: data
+        });
+
+        const result = await res.json();
+        if(res.ok){
+          mensaje.style.color = 'green';
+          mensaje.textContent = result.mensaje || 'Recurso subido correctamente';
+          form.reset();
+        } else {
+          mensaje.style.color = 'red';
+          mensaje.textContent = result.mensaje || 'Error al subir recurso';
+        }
+      } catch (err) {
+        mensaje.style.color = 'red';
+        mensaje.textContent = 'Error al conectar con el servidor';
+      }
+    });
+  </script>
+</body>
+</html>
