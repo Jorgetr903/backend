@@ -5,7 +5,7 @@ const RecursoSchema = new mongoose.Schema({
   titulo: { type: String, required: true },
   descripcion: { type: String },
   tipo: { type: String, required: true }, // formacion, actividad, dinamica
-  anio: { type: int }, // ejemplo: "2025"
+  anio: { type: Number }, // ejemplo: "2025"
   momento: { type: String }, // Mañana, Tarde, Velada, Olimpiada
   tema: { type: String }, // dinámicas
   grupo: { type: String }, // Pequeños, Medianos, Mayores
