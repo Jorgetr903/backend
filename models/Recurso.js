@@ -1,39 +1,16 @@
-// routes/recursos.js
-const express = require("express");
-const router = express.Router();
-const Recurso = require("../models/Recurso");
+// backend/models/Recurso.js
+const mongoose = require("mongoose");
 
-// GET /api/recursos?tipo=dinamica&tema=Confianza&grupo=Mayores
-router.get("/", async (req, res) => {
-  try {
-    const {
-      tipo,
-      categoria,
-      anio,
-      momento,
-      tema,
-      grupo,
-      page = 1,
-      limit = 10,
-    } = req.query;
-
-    const query = {};
-    if (tipo) query.tipo = tipo;
-    if (categoria) query.categoria = categoria;
-    if (anio) query.anio = parseInt(anio);
-    if (momento) query.momento = momento;
-    if (tema) query.tema = tema;
-    if (grupo) query.grupo = grupo;
-
-    const recursos = await Recurso.find(query)
-      .sort({ fecha: -1 })
-      .skip((page - 1) * limit)
-      .limit(parseInt(limit));
-
-    res.json(recursos);
-  } catch (err) {
-    res.status(500).json({ mensaje: "Error al obtener recursos" });
-  }
+const RecursoSchema = new mongoose.Schema({
+  titulo: { type: String, required: true },
+  descripcion: { type: String },
+  tipo: { type: String, required: true }, // formacion, actividad, dinamica
+  anio: { type: int }, // ejemplo: "2025"
+  momento: { type: String }, // Mañana, Tarde, Velada, Olimpiada
+  tema: { type: String }, // dinámicas
+  grupo: { type: String }, // Pequeños, Medianos, Mayores
+  archivoUrl: { type: String, required: true }, // ruta al PDF u otro archivo
+  fecha: { type: Date, default: Date.now },
 });
 
-module.exports = router;
+module.exports = mongoose.model("Recurso", RecursoSchema);

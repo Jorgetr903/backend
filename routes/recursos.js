@@ -39,4 +39,25 @@ router.post('/subir', upload.single('archivo'), async (req, res) => {
   }
 });
 
+// Listar recursos con filtros opcionales
+router.get("/", async (req, res) => {
+  try {
+    const { tipo, anio, momento, tema, grupo } = req.query;
+    let filtro = {};
+
+    if (tipo) filtro.tipo = tipo;
+    if (anio) filtro.anio = anio;
+    if (momento) filtro.momento = momento;
+    if (tema) filtro.tema = tema;
+    if (grupo) filtro.grupo = grupo;
+
+    const recursos = await Recurso.find(filtro);
+    res.json(recursos);
+  } catch (err) {
+    console.error("Error al obtener recursos:", err);
+    res.status(500).json({ mensaje: "Error al obtener los recursos" });
+  }
+});
+
+
 module.exports = router;
