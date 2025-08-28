@@ -6,7 +6,7 @@ const Recurso = require("../models/Recurso");
 
 // Configuración de Multer
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, "uploads/"),
+  destination: (req, file, cb) => cb(null, path.join(__dirname, "../public/uploads")),
   filename: (req, file, cb) => {
     const uniqueName = Date.now() + "-" + file.originalname;
     cb(null, uniqueName);
@@ -17,16 +17,15 @@ const upload = multer({ storage });
 // Endpoint para subir recurso
 router.post("/subir", upload.single("archivo"), async (req, res) => {
   try {
-    const { titulo, descripcion, tipo, anio, momento, tema, grupo } = req.body;
+    const { titulo, descripcion, tipo, anio, momento, grupo } = req.body;
     const archivoUrl = `/uploads/${req.file.filename}`;
 
     const nuevoRecurso = new Recurso({
       titulo,
       descripcion,
       tipo,
-      anio: anio ? Number(anio) : undefined, // aseguramos que sea número
+      anio: anio ? Number(anio) : undefined,
       momento,
-      tema,
       grupo,
       archivoUrl,
     });
@@ -42,14 +41,13 @@ router.post("/subir", upload.single("archivo"), async (req, res) => {
 // Listar recursos con filtros opcionales
 router.get("/", async (req, res) => {
   try {
-    const { tipo, anio, momento, tema, grupo, q, sort, page = 1, limit = 20 } = req.query;
+    const { tipo, anio, momento, grupo, q, sort, page = 1, limit = 20 } = req.query;
 
     let filtro = {};
 
     if (tipo) filtro.tipo = tipo;
-    if (anio) filtro.anio = Number(anio); // convertir a número
+    if (anio) filtro.anio = Number(anio);
     if (momento) filtro.momento = momento;
-    if (tema) filtro.tema = tema;
     if (grupo) filtro.grupo = grupo;
 
     // Búsqueda por texto en título y descripción
