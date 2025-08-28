@@ -11,13 +11,16 @@ connectDB();
 app.use(cors());
 app.use(express.json());
 
-// Servir archivos estáticos (PDFs, videos, audios)
+// Servir archivos estáticos de la carpeta public
+app.use(express.static(path.join(__dirname, "public")));
+
+// Servir archivos subidos
 app.use("/uploads", express.static(path.join(__dirname, "public/uploads")));
 
 // Rutas de la API
 app.use("/api/recursos", require("./routes/recursos"));
 
-// Servir página principal opcional
+// Página de inicio opcional
 app.get("/", (req, res) => {
   res.send("Servidor de Recursos Monitores funcionando!");
 });
