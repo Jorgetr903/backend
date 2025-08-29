@@ -1,24 +1,26 @@
 const express = require("express");
 const router = express.Router();
 const multer = require("multer");
-const path = require("path");
+const { CloudinaryStorage } = require('multer-storage-cloudinary');
+const cloudinary = require('../cloudinary');
 const Recurso = require("../models/Recurso");
 
 // Configuración de Multer
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, path.join(__dirname, "../public/uploads")),
-  filename: (req, file, cb) => {
-    const uniqueName = Date.now() + "-" + file.originalname;
-    cb(null, uniqueName);
+const storage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: {
+    folder: 'Dynamic folders',       // Carpeta en Cloudinary
+    format: async (req, file) => 'auto', // Mantiene extensión
   },
 });
+
 const upload = multer({ storage });
 
 // Endpoint para subir recurso
 router.post("/subir", upload.single("archivo"), async (req, res) => {
   try {
     const { titulo, descripcion, tipo, anio, momento, grupo } = req.body;
-    const archivoUrl = `/uploads/${req.file.filename}`;
+    const archivoUrl = req.file.path;
 
     const nuevoRecurso = new Recurso({
       titulo,
