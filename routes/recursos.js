@@ -1,26 +1,24 @@
 const express = require("express");
 const router = express.Router();
 const multer = require("multer");
-const { CloudinaryStorage } = require('multer-storage-cloudinary');
-const cloudinary = require('../cloudinary');
+const path = require("path");
 const Recurso = require("../models/Recurso");
 
 // Configuración de Multer
-const storage = new CloudinaryStorage({
-  cloudinary: cloudinary,
-  params: {
-    folder: 'Dynamic folders',       // Carpeta en Cloudinary
-    format: async (req, file) => 'auto', // Mantiene extensión
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, path.join(__dirname, "../public/uploads")),
+  filename: (req, file, cb) => {
+    const uniqueName = Date.now() + "-" + file.originalname;
+    cb(null, uniqueName);
   },
 });
-
 const upload = multer({ storage });
 
 // Endpoint para subir recurso
 router.post("/subir", upload.single("archivo"), async (req, res) => {
   try {
     const { titulo, descripcion, tipo, anio, momento, grupo } = req.body;
-    const archivoUrl = req.file.path;
+    const archivoUrl = `/uploads/${req.file.filename}`;
 
     const nuevoRecurso = new Recurso({
       titulo,
@@ -48,7 +46,7 @@ router.get("/", async (req, res) => {
     let filtro = {};
 
     if (tipo) filtro.tipo = tipo;
-    if (anio) filtro.anio = Number(anio);
+    if (anio) filtro.anio = Number(anio); 
     if (momento) filtro.momento = momento;
     if (grupo) filtro.grupo = grupo;
 
