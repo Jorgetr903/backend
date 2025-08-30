@@ -76,4 +76,27 @@ router.get("/", async (req, res) => {
   }
 });
 
+// Obtener solo los años únicos
+router.get("/years", async (req, res) => {
+  try {
+    const years = await Recurso.distinct("anio", { tipo: "actividad" });
+    years.sort((a, b) => b - a); // orden descendente
+    res.json(years);
+  } catch (err) {
+    res.status(500).json({ error: "Error al obtener los años" });
+  }
+});
+
+// Obtener solo los años únicos de dinámicas
+router.get("/years-dinamicas", async (req, res) => {
+  try {
+    const years = await Recurso.distinct("anio", { tipo: "dinamica" });
+    years.sort((a, b) => b - a); // orden descendente
+    res.json(years);
+  } catch (err) {
+    res.status(500).json({ error: "Error al obtener los años de dinámicas" });
+  }
+});
+
+
 module.exports = router;
