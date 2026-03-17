@@ -8,7 +8,9 @@ const app = express();
 // Conectar a MongoDB
 connectDB();
 
-app.use(cors());
+app.use(cors({
+  origin: ["https://cspweb.onrender.com", "https://recursos-monitores.onrender.com"],
+}));
 app.use(express.json());
 
 // Servir archivos estáticos de la carpeta public
