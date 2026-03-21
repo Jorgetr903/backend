@@ -9,7 +9,7 @@ const app = express();
 connectDB();
 
 app.use(cors({
-  origin: ["https://cspweb.onrender.com", "https://recursos-monitores.onrender.com"],
+  origin: ["https://cspweb.onrender.com", "https://recursos-monitores.onrender.com", "http://localhost", /^http:\/\/localhost(:\d+)?$/],
 }));
 app.use(express.json());
 
