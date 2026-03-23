@@ -16,6 +16,19 @@ app.use(express.json());
 // Servir archivos estáticos de la carpeta public
 app.use(express.static(path.join(__dirname, "public")));
 
+app.get("/uploads/:file", (req, res) => {
+  const filePath = path.join(__dirname, "public/uploads", req.params.file);
+
+  fs.access(filePath, fs.constants.F_OK, (err) => {
+    if (err) return res.status(404).send("Archivo no encontrado");
+
+    // Headers importantes para abrir PDFs en PWA/web sin descargar
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Access-Control-Allow-Origin", "*"); // o tu lista de dominios
+    res.sendFile(filePath);
+  });
+});
+
 // Servir archivos subidos
 app.use("/uploads", express.static(path.join(__dirname, "public/uploads")));
 
