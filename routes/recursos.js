@@ -2,22 +2,37 @@ const express = require("express");
 const router = express.Router();
 const multer = require("multer");
 const path = require("path");
+const mongoose = require("mongoose");
 const Recurso = require("../models/Recurso");
 
-// Configuración de Multer
+function sanitizeFilename(originalName) {
+  const extension = path.extname(originalName).toLowerCase();
+  const baseName = path.basename(originalName, extension);
+  const safeBaseName = baseName
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .toLowerCase();
+
+  return `${safeBaseName || "archivo"}${extension}`;
+}
+
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, path.join(__dirname, "../public/uploads")),
+  destination: (req, file, cb) => {
+    cb(null, path.join(__dirname, "../public/uploads"));
+  },
   filename: (req, file, cb) => {
-    const uniqueName = Date.now() + "-" + file.originalname;
+    const uniqueName = `${Date.now()}-${sanitizeFilename(file.originalname)}`;
     cb(null, uniqueName);
   },
 });
 const upload = multer({ storage });
 
-// Endpoint para subir recurso
 router.post("/subir", upload.single("archivo"), async (req, res) => {
   try {
-    const { titulo, descripcion, tipo, anio, momento, grupo } = req.body;
+    const { titulo, descripcion, tipo, anio, momento, tema, grupo } = req.body;
     const archivoUrl = `/uploads/${req.file.filename}`;
 
     const nuevoRecurso = new Recurso({
@@ -26,6 +41,7 @@ router.post("/subir", upload.single("archivo"), async (req, res) => {
       tipo,
       anio: anio ? Number(anio) : undefined,
       momento,
+      tema,
       grupo,
       archivoUrl,
     });
@@ -38,29 +54,26 @@ router.post("/subir", upload.single("archivo"), async (req, res) => {
   }
 });
 
-// Listar recursos con filtros opcionales
 router.get("/", async (req, res) => {
   try {
     const { tipo, anio, momento, grupo, q, sort, page = 1, limit = 20 } = req.query;
 
-    let filtro = {};
+    const filtro = {};
 
     if (tipo) filtro.tipo = tipo;
-    if (anio) filtro.anio = Number(anio); 
+    if (anio) filtro.anio = Number(anio);
     if (momento) filtro.momento = momento;
     if (grupo) filtro.grupo = grupo;
 
-    // Búsqueda por texto en título y descripción
     if (q && q.trim() !== "") {
       const regex = new RegExp(q.trim(), "i");
       filtro.$or = [{ titulo: regex }, { descripcion: regex }];
     }
 
-    // Ordenación
     const sortMap = {
-      recent: { fecha: -1 }, // más recientes (default)
-      oldest: { fecha: 1 },  // más antiguos
-      alpha: { titulo: 1 },  // A → Z
+      recent: { fecha: -1 },
+      oldest: { fecha: 1 },
+      alpha: { titulo: 1 },
     };
     const sortBy = sortMap[sort] || sortMap.recent;
 
@@ -76,27 +89,43 @@ router.get("/", async (req, res) => {
   }
 });
 
-// Obtener solo los años únicos
 router.get("/years", async (req, res) => {
   try {
     const years = await Recurso.distinct("anio", { tipo: "actividad" });
-    years.sort((a, b) => b - a); // orden descendente
+    years.sort((a, b) => b - a);
     res.json(years);
   } catch (err) {
-    res.status(500).json({ error: "Error al obtener los años" });
+    res.status(500).json({ error: "Error al obtener los anios" });
   }
 });
 
-// Obtener solo los años únicos de dinámicas
 router.get("/years-dinamicas", async (req, res) => {
   try {
     const years = await Recurso.distinct("anio", { tipo: "dinamica" });
-    years.sort((a, b) => b - a); // orden descendente
+    years.sort((a, b) => b - a);
     res.json(years);
   } catch (err) {
-    res.status(500).json({ error: "Error al obtener los años de dinámicas" });
+    res.status(500).json({ error: "Error al obtener los anios de dinamicas" });
   }
 });
 
+router.get("/:id", async (req, res) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ mensaje: "ID de recurso no valido" });
+    }
+
+    const recurso = await Recurso.findById(req.params.id);
+
+    if (!recurso) {
+      return res.status(404).json({ mensaje: "Recurso no encontrado" });
+    }
+
+    return res.json(recurso);
+  } catch (err) {
+    console.error("Error al obtener recurso:", err);
+    return res.status(500).json({ mensaje: "Error al obtener el recurso" });
+  }
+});
 
 module.exports = router;
