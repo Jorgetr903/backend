@@ -1,41 +1,75 @@
 const express = require("express");
-const connectDB = require("./config/db"); // tu conexión a MongoDB
+const connectDB = require("./config/db");
 const cors = require("cors");
 const path = require("path");
 
 const app = express();
+const publicDir = path.join(__dirname, "public");
+const uploadsDir = path.join(publicDir, "uploads");
 
-// Conectar a MongoDB
 connectDB();
 
 app.use(cors({
-  origin: ["https://cspweb.onrender.com", "https://recursos-monitores.onrender.com", "https://appcsp.onrender.com", "http://localhost", /^http:\/\/localhost(:\d+)?$/],
+  origin: [
+    "https://cspweb.onrender.com",
+    "https://recursos-monitores.onrender.com",
+    "https://appcsp.onrender.com",
+    "http://localhost",
+    /^http:\/\/localhost(:\d+)?$/,
+  ],
 }));
 app.use(express.json());
 
-// Servir archivos estáticos de la carpeta public
-app.use(express.static(path.join(__dirname, "public")));
+function encodeContentDispositionFilename(filename) {
+  return encodeURIComponent(filename)
+    .replace(/['()]/g, escape)
+    .replace(/\*/g, "%2A");
+}
 
-app.get("/uploads/:file", (req, res) => {
-  const filePath = path.join(__dirname, "public/uploads", req.params.file);
+function resolveUploadPath(filename) {
+  const filePath = path.resolve(uploadsDir, filename);
+  const uploadsRoot = path.resolve(uploadsDir) + path.sep;
 
-  fs.access(filePath, fs.constants.F_OK, (err) => {
-    if (err) return res.status(404).send("Archivo no encontrado");
+  if (!filePath.startsWith(uploadsRoot)) {
+    return null;
+  }
 
-    // Headers importantes para abrir PDFs en PWA/web sin descargar
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Access-Control-Allow-Origin", "*"); // o tu lista de dominios
-    res.sendFile(filePath);
+  return filePath;
+}
+
+app.get("/uploads/:file/download", (req, res, next) => {
+  const filePath = resolveUploadPath(req.params.file);
+
+  if (!filePath) {
+    return res.status(400).send("Ruta de archivo no valida");
+  }
+
+  return res.download(filePath, req.params.file, (err) => {
+    if (err && !res.headersSent) {
+      next(err);
+    }
   });
 });
 
-// Servir archivos subidos
-app.use("/uploads", express.static(path.join(__dirname, "public/uploads")));
+app.use("/uploads", express.static(uploadsDir, {
+  setHeaders: (res, filePath) => {
+    if (path.extname(filePath).toLowerCase() === ".pdf") {
+      const filename = path.basename(filePath);
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader(
+        "Content-Disposition",
+        `inline; filename*=UTF-8''${encodeContentDispositionFilename(filename)}`,
+      );
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+    }
+  },
+}));
 
-// Rutas de la API
+app.use(express.static(publicDir));
+
 app.use("/api/recursos", require("./routes/recursos"));
 
-// Página de inicio opcional
 app.get("/", (req, res) => {
   res.send("Servidor de Recursos Monitores funcionando!");
 });
