@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 
 // Schema para cada gasto diario
+// NOTA: se han eliminado los campos 'descripcion' y 'fecha'
 const GastoSchema = new mongoose.Schema({
   dia: {
     type: Number,
@@ -10,7 +11,7 @@ const GastoSchema = new mongoose.Schema({
     type: Number,
     required: true,
     min: 0
-  },
+  }
 }, { _id: false });
 
 // Schema para cada acampado
@@ -36,7 +37,7 @@ const AcampadoSchema = new mongoose.Schema({
   }
 }, { _id: true });
 
-// Virtuals calculados
+// Virtuals calculados (no se guardan en BD, se calculan al vuelo)
 AcampadoSchema.virtual('totalGastado').get(function () {
   return this.gastos.reduce((sum, g) => sum + g.cantidad, 0);
 });
@@ -48,7 +49,7 @@ AcampadoSchema.virtual('saldo').get(function () {
 AcampadoSchema.set('toJSON', { virtuals: true });
 AcampadoSchema.set('toObject', { virtuals: true });
 
-// Schema principal del cuaderno del kiosko (uno por año de campamento)
+// Schema principal: un documento por año de campamento
 const KioskoSchema = new mongoose.Schema({
   anio: {
     type: Number,
@@ -58,14 +59,10 @@ const KioskoSchema = new mongoose.Schema({
   acampados: {
     type: [AcampadoSchema],
     default: []
-  },
-  updatedAt: {
-    type: Date,
-    default: Date.now
   }
-}, { timestamps: true });
+}, { timestamps: true }); // timestamps añade createdAt y updatedAt automáticamente
 
-// Ordenar acampados por nombre antes de devolver
+// Ordenar acampados por nombre antes de guardar
 KioskoSchema.pre('save', function (next) {
   this.acampados.sort((a, b) =>
     a.nombre.localeCompare(b.nombre, 'es') ||
