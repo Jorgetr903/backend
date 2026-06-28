@@ -11,15 +11,14 @@ const uploadsDir = path.join(publicDir, "uploads");
 
 connectDB();
 
-app.use(cors({
-  origin: [
-    "https://cspweb.onrender.com",
-    "https://recursos-monitores.onrender.com",
-    "https://appcsp.onrender.com",
-    "http://localhost",
-    /^http:\/\/localhost(:\d+)?$/,
-  ],
-}));
+const corsOptions = {
+  origin: true,
+  methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  exposedHeaders: ["Content-Disposition"],
+};
+
+app.use(cors(corsOptions));
 app.use(express.json());
 
 function encodeContentDispositionFilename(filename) {
