@@ -2,6 +2,8 @@ const express = require("express");
 const connectDB = require("./config/db");
 const cors = require("cors");
 const path = require("path");
+const kioskoRoutes = require('./routes/kiosko');
+
 
 const app = express();
 const publicDir = path.join(__dirname, "public");
@@ -68,6 +70,8 @@ app.use("/uploads", express.static(uploadsDir, {
 app.use(express.static(publicDir));
 
 app.use("/api/recursos", require("./routes/recursos"));
+
+app.use('/api/kiosko', kioskoRoutes);
 
 app.get("/", (req, res) => {
   res.send("Servidor de Recursos Monitores funcionando!");
