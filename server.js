@@ -2,6 +2,7 @@ const express = require("express");
 const connectDB = require("./config/db");
 const cors = require("cors");
 const path = require("path");
+const multer = require("multer");
 const kioskoRoutes = require('./routes/kiosko');
 
 
@@ -14,7 +15,7 @@ connectDB();
 const corsOptions = {
   origin: true,
   methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
+  allowedHeaders: ["Content-Type", "Authorization", "x-upload-key"],
   exposedHeaders: ["Content-Disposition"],
 };
 
@@ -75,6 +76,31 @@ app.use('/api/kiosko', kioskoRoutes);
 
 app.get("/", (req, res) => {
   res.send("Servidor de Recursos Monitores funcionando!");
+});
+
+// ── Manejador de errores ──────────────────────────────────────────────
+// Va despues de todas las rutas. Convierte los errores de la subida
+// (archivo demasiado grande, no es PDF...) en un JSON legible.
+app.use((err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    if (err.code === "LIMIT_FILE_SIZE") {
+      return res
+        .status(413)
+        .json({ mensaje: "El archivo supera el tamaño máximo permitido (10 MB)" });
+    }
+    return res.status(400).json({ mensaje: `Error al subir el archivo: ${err.message}` });
+  }
+
+  if (err && err.message === "SOLO_PDF") {
+    return res.status(400).json({ mensaje: "Solo se permiten archivos PDF" });
+  }
+
+  if (err) {
+    console.error(err);
+    return res.status(500).json({ mensaje: "Error interno del servidor" });
+  }
+
+  next();
 });
 
 const PORT = process.env.PORT || 5000;

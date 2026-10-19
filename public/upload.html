@@ -1,87 +1,563 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-  <meta charset="UTF-8">
-  <title>Subir Recurso</title>
-  <style>
-    body { font-family: Arial, sans-serif; margin: 40px; }
-    label { display: block; margin-top: 10px; }
-    input, select, textarea { width: 300px; padding: 5px; margin-top: 5px; }
-    button { margin-top: 15px; padding: 10px 20px; }
-  </style>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="robots" content="noindex, nofollow" />
+<title>CSP · Subir recurso</title>
+<style>
+  :root {
+    --verde: #4CAF50;
+    --verde-oscuro: #388E3C;
+    --azul: #2196F3;
+    --fondo: #F5F5F5;
+    --texto: #212121;
+    --gris: #757575;
+    --borde: #E0E0E0;
+    --rojo: #D32F2F;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--fondo);
+    color: var(--texto);
+  }
+
+  header {
+    background: var(--verde);
+    color: white;
+    padding: 20px 16px;
+    text-align: center;
+  }
+
+  header h1 { margin: 0; font-size: 22px; font-weight: 700; }
+  header p { margin: 4px 0 0; font-size: 14px; opacity: 0.9; }
+
+  main { max-width: 520px; margin: 0 auto; padding: 20px 16px 60px; }
+
+  .card {
+    background: white;
+    border-radius: 16px;
+    padding: 20px;
+    margin-bottom: 16px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+  }
+
+  .card h2 {
+    font-size: 15px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--gris);
+    margin: 0 0 14px;
+  }
+
+  .campo + .campo { margin-top: 14px; }
+
+  label {
+    display: block;
+    font-size: 14px;
+    font-weight: 600;
+    margin: 0 0 6px;
+  }
+
+  label .opcional { font-weight: 400; color: var(--gris); font-size: 12px; }
+
+  input[type="text"],
+  input[type="password"],
+  select,
+  textarea {
+    width: 100%;
+    padding: 12px;
+    border: 1.5px solid var(--borde);
+    border-radius: 10px;
+    font-size: 16px;
+    font-family: inherit;
+    background: white;
+    color: var(--texto);
+  }
+
+  input:focus, select:focus, textarea:focus { outline: none; border-color: var(--verde); }
+
+  textarea { resize: vertical; min-height: 70px; }
+
+  .ayuda { font-size: 12px; color: var(--gris); margin: 8px 0 0; }
+
+  .acceso-guardado {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    background: #E8F5E9;
+    color: var(--verde-oscuro);
+    border-radius: 10px;
+    padding: 10px 14px;
+    font-size: 13px;
+    margin-bottom: 16px;
+  }
+
+  .acceso-guardado button {
+    background: none;
+    border: none;
+    color: var(--azul);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 4px;
+  }
+
+  .archivo-box {
+    border: 2px dashed var(--borde);
+    border-radius: 10px;
+    padding: 18px;
+    text-align: center;
+  }
+
+  .archivo-box.tiene-archivo { border-color: var(--verde); background: #F1F8F1; }
+
+  .archivo-nombre { font-size: 13px; color: var(--gris); margin-top: 8px; word-break: break-all; }
+
+  input[type="file"] { display: none; }
+
+  .boton-archivo {
+    display: inline-block;
+    margin: 0;
+    background: var(--azul);
+    color: white;
+    padding: 10px 18px;
+    border-radius: 8px;
+    font-weight: 600;
+    font-size: 14px;
+    cursor: pointer;
+  }
+
+  button[type="submit"] {
+    width: 100%;
+    background: var(--verde);
+    color: white;
+    border: none;
+    padding: 15px;
+    border-radius: 10px;
+    font-size: 16px;
+    font-weight: 700;
+    cursor: pointer;
+    margin-top: 6px;
+  }
+
+  button[type="submit"]:disabled { background: #A5D6A7; cursor: not-allowed; }
+
+  .progreso {
+    display: none;
+    height: 8px;
+    border-radius: 4px;
+    background: var(--borde);
+    overflow: hidden;
+    margin-top: 12px;
+  }
+
+  .progreso-barra { height: 100%; width: 0%; background: var(--azul); transition: width 0.15s ease; }
+
+  .mensaje {
+    display: none;
+    padding: 14px;
+    border-radius: 10px;
+    font-size: 14px;
+    margin-top: 14px;
+    line-height: 1.4;
+  }
+
+  .mensaje.ok { display: block; background: #E8F5E9; color: var(--verde-oscuro); border: 1.5px solid var(--verde); }
+  .mensaje.error { display: block; background: #FFEBEE; color: var(--rojo); border: 1.5px solid var(--rojo); }
+</style>
 </head>
 <body>
-  <h2>Subir Recurso</h2>
-  <form id="uploadForm" enctype="multipart/form-data">
-    <label>Título:</label>
-    <input type="text" name="titulo" required>
 
-    <label>Descripción:</label>
-    <textarea name="descripcion" rows="3"></textarea>
+<header>
+  <h1>Subir recurso</h1>
+  <p>CSP · Recursos para monitores</p>
+</header>
 
-    <label>Tipo:</label>
-    <select name="tipo" required>
-      <option value="formacion">Formación</option>
-      <option value="actividad">Actividad</option>
-      <option value="dinamica">Dinámica</option>
-    </select>
+<main>
+  <form id="formSubida" autocomplete="off" novalidate>
 
-    <label>Año (para actividades y dinámicas):</label>
-    <input type="text" name="anio" required>
+    <div class="acceso-guardado" id="accesoGuardado" style="display:none;">
+      <span>✓ Acceso activado en este dispositivo</span>
+      <button type="button" id="olvidarClave">Olvidar</button>
+    </div>
 
-    <label>Momento (solo actividades):</label>
-    <select name="momento">
-      <option value="">--Ninguno--</option>
-      <option value="Mañana">Mañana</option>
-      <option value="Tarde">Tarde</option>
-      <option value="Velada">Velada</option>
-      <option value="Olimpiada">Olimpiada</option>
-    </select>
+    <div class="card" id="cardAcceso" style="display:none;">
+      <h2>Acceso</h2>
+      <div class="campo">
+        <label for="clave">Clave de acceso</label>
+        <input type="password" id="clave" autocomplete="off" />
+        <p class="ayuda">Es la clave del enlace de subida que te han pasado. Se guardará en este dispositivo.</p>
+      </div>
+    </div>
 
-    <label>Grupo (solo dinámicas):</label>
-    <select name="grupo">
-      <option value="">--Ninguno--</option>
-      <option value="Pequeños">Pequeños</option>
-      <option value="Medianos">Medianos</option>
-      <option value="Mayores">Mayores</option>
-    </select>
+    <div class="card">
+      <h2>Datos del recurso</h2>
 
-    <label>Archivo (PDF, video o audio):</label>
-    <input type="file" name="archivo" required>
+      <div class="campo">
+        <label for="titulo">Título</label>
+        <input type="text" id="titulo" maxlength="150" placeholder="Ej: Gymkhana de verano" />
+      </div>
 
-    <button type="submit">Subir Recurso</button>
+      <div class="campo">
+        <label for="tipo">Tipo</label>
+        <select id="tipo">
+          <option value="">Elige...</option>
+          <option value="formacion">Formación</option>
+          <option value="actividad">Actividad</option>
+          <option value="dinamica">Dinámica</option>
+        </select>
+      </div>
+
+      <div class="campo" id="campoAnio" style="display:none;">
+        <label for="anio">Año</label>
+        <select id="anio">
+          <option value="">Elige el año...</option>
+        </select>
+      </div>
+
+      <div class="campo" id="campoMomento" style="display:none;">
+        <label for="momento">Momento</label>
+        <select id="momento">
+          <option value="">Elige el momento...</option>
+          <option value="Mañana">Mañana</option>
+          <option value="Tarde">Tarde</option>
+          <option value="Velada">Velada</option>
+          <option value="Olimpiada">Olimpiada</option>
+        </select>
+      </div>
+
+      <div class="campo" id="campoGrupo" style="display:none;">
+        <label for="grupo">Grupo</label>
+        <select id="grupo">
+          <option value="">Elige el grupo...</option>
+          <option value="Pequeños">Pequeños</option>
+          <option value="Medianos">Medianos</option>
+          <option value="Mayores">Mayores</option>
+        </select>
+      </div>
+
+      <div class="campo">
+        <label for="descripcion">Descripción <span class="opcional">(opcional)</span></label>
+        <textarea id="descripcion" maxlength="500" placeholder="Breve descripción del recurso"></textarea>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Archivo</h2>
+      <div class="archivo-box" id="archivoBox">
+        <label class="boton-archivo" for="archivo">Elegir PDF</label>
+        <input type="file" id="archivo" accept="application/pdf,.pdf" />
+        <div class="archivo-nombre" id="archivoNombre">Ningún archivo seleccionado</div>
+      </div>
+      <p class="ayuda">Solo PDF, máximo 10 MB.</p>
+    </div>
+
+    <button type="submit" id="botonEnviar">Subir recurso</button>
+
+    <div class="progreso" id="progreso">
+      <div class="progreso-barra" id="progresoBarra"></div>
+    </div>
+
+    <div class="mensaje" id="mensaje" role="status"></div>
   </form>
+</main>
 
-  <div id="mensaje" style="margin-top:20px; color: green;"></div>
+<script>
+(function () {
+  "use strict";
 
-  <script>
-    const form = document.getElementById('uploadForm');
-    const mensaje = document.getElementById('mensaje');
+  var TAMANO_MAXIMO = 10 * 1024 * 1024; // 10 MB (limite de Cloudinary en el plan gratuito)
+  var CLAVE_STORAGE = "csp_clave";
 
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const data = new FormData(form);
+  var form = document.getElementById("formSubida");
+  var accesoGuardado = document.getElementById("accesoGuardado");
+  var olvidarClave = document.getElementById("olvidarClave");
+  var cardAcceso = document.getElementById("cardAcceso");
+  var claveInput = document.getElementById("clave");
+  var tituloInput = document.getElementById("titulo");
+  var tipoInput = document.getElementById("tipo");
+  var campoAnio = document.getElementById("campoAnio");
+  var anioInput = document.getElementById("anio");
+  var campoMomento = document.getElementById("campoMomento");
+  var momentoInput = document.getElementById("momento");
+  var campoGrupo = document.getElementById("campoGrupo");
+  var grupoInput = document.getElementById("grupo");
+  var descripcionInput = document.getElementById("descripcion");
+  var archivoInput = document.getElementById("archivo");
+  var archivoBox = document.getElementById("archivoBox");
+  var archivoNombre = document.getElementById("archivoNombre");
+  var botonEnviar = document.getElementById("botonEnviar");
+  var progreso = document.getElementById("progreso");
+  var progresoBarra = document.getElementById("progresoBarra");
+  var mensaje = document.getElementById("mensaje");
 
-      try {
-        const res = await fetch('/api/recursos/subir', {
-          method: 'POST',
-          body: data
-        });
+  var enCurso = false;
+  var claveActual = ""; // clave en uso (guardada en el dispositivo o escrita ahora)
 
-        const result = await res.json();
-        if(res.ok){
-          mensaje.style.color = 'green';
-          mensaje.textContent = result.mensaje || 'Recurso subido correctamente';
-          form.reset();
-        } else {
-          mensaje.style.color = 'red';
-          mensaje.textContent = result.mensaje || 'Error al subir recurso';
-        }
-      } catch (err) {
-        mensaje.style.color = 'red';
-        mensaje.textContent = 'Error al conectar con el servidor';
+  // ── Clave guardada en el dispositivo ─────────────────────────────
+  function leerClaveGuardada() {
+    try { return localStorage.getItem(CLAVE_STORAGE) || ""; } catch (e) { return ""; }
+  }
+  function guardarClave(valor) {
+    try { localStorage.setItem(CLAVE_STORAGE, valor); } catch (e) { /* sin almacenamiento: se pedira otra vez */ }
+  }
+  function borrarClaveGuardada() {
+    try { localStorage.removeItem(CLAVE_STORAGE); } catch (e) { /* nada */ }
+  }
+
+  // La clave puede venir en el enlace de subida: .../upload.html#k=LA_CLAVE
+  // Lo que va detras de "#" no se envia al servidor. La guardamos y la
+  // quitamos de la barra de direcciones.
+  (function leerClaveDelEnlace() {
+    var hash = window.location.hash ? window.location.hash.substring(1) : "";
+    if (!hash) { return; }
+    var claveEnlace = new URLSearchParams(hash).get("k");
+    if (!claveEnlace) { return; }
+    claveActual = claveEnlace;
+    guardarClave(claveEnlace);
+    try {
+      history.replaceState(null, "", window.location.pathname + window.location.search);
+    } catch (e) { /* nada */ }
+  })();
+
+  if (!claveActual) { claveActual = leerClaveGuardada(); }
+
+  function actualizarAcceso() {
+    var hayClave = claveActual !== "";
+    cardAcceso.style.display = hayClave ? "none" : "block";
+    accesoGuardado.style.display = hayClave ? "flex" : "none";
+  }
+
+  olvidarClave.addEventListener("click", function () {
+    borrarClaveGuardada();
+    claveActual = "";
+    claveInput.value = "";
+    actualizarAcceso();
+  });
+
+  // ── Año: anterior, actual y siguiente ────────────────────────────
+  var anioActual = new Date().getFullYear();
+  [anioActual - 1, anioActual, anioActual + 1].forEach(function (a) {
+    var opcion = document.createElement("option");
+    opcion.value = String(a);
+    opcion.textContent = String(a);
+    anioInput.appendChild(opcion);
+  });
+
+  // ── Campos que dependen del tipo ─────────────────────────────────
+  //  actividad: año + momento | dinamica: año + grupo | formacion: nada mas
+  function actualizarCampos() {
+    var tipo = tipoInput.value;
+    campoAnio.style.display = (tipo === "actividad" || tipo === "dinamica") ? "block" : "none";
+    campoMomento.style.display = tipo === "actividad" ? "block" : "none";
+    campoGrupo.style.display = tipo === "dinamica" ? "block" : "none";
+  }
+
+  tipoInput.addEventListener("change", actualizarCampos);
+
+  // Tipo preseleccionado desde la app: .../upload.html?tipo=actividad
+  var tipoEnlace = new URLSearchParams(window.location.search).get("tipo");
+  if (tipoEnlace === "formacion" || tipoEnlace === "actividad" || tipoEnlace === "dinamica") {
+    tipoInput.value = tipoEnlace;
+  }
+
+  actualizarCampos();
+  actualizarAcceso();
+
+  // ── Archivo ──────────────────────────────────────────────────────
+  function formatearTamano(bytes) {
+    return (bytes / (1024 * 1024)).toFixed(1).replace(".", ",") + " MB";
+  }
+
+  function actualizarArchivo() {
+    if (archivoInput.files && archivoInput.files.length > 0) {
+      var f = archivoInput.files[0];
+      archivoNombre.textContent = f.name + " (" + formatearTamano(f.size) + ")";
+      archivoBox.classList.add("tiene-archivo");
+    } else {
+      archivoNombre.textContent = "Ningún archivo seleccionado";
+      archivoBox.classList.remove("tiene-archivo");
+    }
+  }
+
+  archivoInput.addEventListener("change", actualizarArchivo);
+
+  // ── Mensajes y estado del boton ──────────────────────────────────
+  function mostrarMensaje(texto, tipo) {
+    mensaje.textContent = texto;
+    mensaje.className = "mensaje " + tipo;
+    if (mensaje.scrollIntoView) {
+      mensaje.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }
+
+  function ocultarMensaje() {
+    mensaje.className = "mensaje";
+    mensaje.textContent = "";
+  }
+
+  function establecerEnvioEnCurso(activo, textoBoton) {
+    enCurso = activo;
+    botonEnviar.disabled = activo;
+    botonEnviar.textContent = activo ? textoBoton : "Subir recurso";
+    if (!activo) {
+      progreso.style.display = "none";
+      progresoBarra.style.width = "0%";
+    }
+  }
+
+  function claveRechazada() {
+    borrarClaveGuardada();
+    claveActual = "";
+    claveInput.value = "";
+    actualizarAcceso();
+    mostrarMensaje(
+      "Clave de acceso incorrecta. Escribe la clave o abre el enlace de subida actualizado.",
+      "error"
+    );
+  }
+
+  function reiniciarFormulario() {
+    // Se mantienen el tipo y el año para poder subir varios seguidos
+    tituloInput.value = "";
+    descripcionInput.value = "";
+    momentoInput.value = "";
+    grupoInput.value = "";
+    archivoInput.value = "";
+    actualizarArchivo();
+  }
+
+  // ── Comprobar la clave antes de subir el PDF ─────────────────────
+  function comprobarClave(clave, alTerminar) {
+    var peticion = new XMLHttpRequest();
+    peticion.open("GET", "/api/recursos/comprobar-clave", true);
+    peticion.setRequestHeader("x-upload-key", clave);
+    peticion.addEventListener("load", function () { alTerminar(peticion.status); });
+    peticion.addEventListener("error", function () { alTerminar(0); });
+    peticion.send();
+  }
+
+  // ── Subida del PDF ───────────────────────────────────────────────
+  function subir(datos, titulo) {
+    var xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/recursos/subir", true);
+    xhr.setRequestHeader("x-upload-key", claveActual);
+
+    xhr.upload.addEventListener("progress", function (evento) {
+      if (evento.lengthComputable) {
+        progresoBarra.style.width = Math.round((evento.loaded / evento.total) * 100) + "%";
       }
     });
-  </script>
+
+    xhr.addEventListener("load", function () {
+      var respuesta = {};
+      try { respuesta = JSON.parse(xhr.responseText); } catch (e) { respuesta = {}; }
+
+      if (xhr.status >= 200 && xhr.status < 300) {
+        mostrarMensaje("✓ «" + titulo + "» subido correctamente.", "ok");
+        reiniciarFormulario();
+      } else if (xhr.status === 401) {
+        claveRechazada();
+      } else {
+        mostrarMensaje(respuesta.mensaje || "Ha ocurrido un error al subir el recurso.", "error");
+      }
+      establecerEnvioEnCurso(false);
+    });
+
+    xhr.addEventListener("error", function () {
+      mostrarMensaje(
+        "No se ha podido conectar con el servidor. Comprueba tu conexión e inténtalo de nuevo.",
+        "error"
+      );
+      establecerEnvioEnCurso(false);
+    });
+
+    establecerEnvioEnCurso(true, "Subiendo...");
+    progreso.style.display = "block";
+    xhr.send(datos);
+  }
+
+  // ── Envio del formulario ─────────────────────────────────────────
+  form.addEventListener("submit", function (evento) {
+    evento.preventDefault();
+    if (enCurso) { return; }
+    ocultarMensaje();
+
+    var titulo = tituloInput.value.trim();
+    var tipo = tipoInput.value;
+    var descripcion = descripcionInput.value.trim();
+    var anio = anioInput.value;
+    var momento = momentoInput.value;
+    var grupo = grupoInput.value;
+    var archivo = archivoInput.files && archivoInput.files[0];
+    var conAnio = tipo === "actividad" || tipo === "dinamica";
+
+    if (!titulo) { mostrarMensaje("Escribe el título del recurso.", "error"); tituloInput.focus(); return; }
+    if (!tipo) { mostrarMensaje("Elige el tipo de recurso.", "error"); tipoInput.focus(); return; }
+    if (conAnio && !anio) { mostrarMensaje("Elige el año.", "error"); anioInput.focus(); return; }
+    if (tipo === "actividad" && !momento) { mostrarMensaje("Elige el momento de la actividad.", "error"); momentoInput.focus(); return; }
+    if (tipo === "dinamica" && !grupo) { mostrarMensaje("Elige el grupo de la dinámica.", "error"); grupoInput.focus(); return; }
+
+    if (!archivo) { mostrarMensaje("Selecciona un archivo PDF.", "error"); return; }
+
+    var esPdf = archivo.type === "application/pdf" || archivo.name.toLowerCase().slice(-4) === ".pdf";
+    if (!esPdf) { mostrarMensaje("El archivo debe ser un PDF.", "error"); return; }
+
+    if (archivo.size > TAMANO_MAXIMO) {
+      mostrarMensaje(
+        "El PDF pesa " + formatearTamano(archivo.size) + " y el máximo es 10 MB. Prueba a comprimirlo.",
+        "error"
+      );
+      return;
+    }
+
+    var clave = claveActual || claveInput.value.trim();
+    if (!clave) { mostrarMensaje("Introduce la clave de acceso.", "error"); claveInput.focus(); return; }
+
+    // Solo se envian los campos que corresponden al tipo elegido
+    var datos = new FormData();
+    datos.append("titulo", titulo);
+    datos.append("tipo", tipo);
+    if (descripcion) { datos.append("descripcion", descripcion); }
+    if (conAnio) { datos.append("anio", anio); }
+    if (tipo === "actividad") { datos.append("momento", momento); }
+    if (tipo === "dinamica") { datos.append("grupo", grupo); }
+    datos.append("archivo", archivo);
+
+    establecerEnvioEnCurso(true, "Comprobando acceso...");
+
+    comprobarClave(clave, function (estado) {
+      if (estado === 200) {
+        // Clave valida: la guardamos si la han escrito a mano
+        if (claveActual !== clave) {
+          claveActual = clave;
+          guardarClave(clave);
+          actualizarAcceso();
+        }
+        subir(datos, titulo);
+      } else if (estado === 401) {
+        claveRechazada();
+        establecerEnvioEnCurso(false);
+      } else if (estado === 0) {
+        mostrarMensaje(
+          "No se ha podido conectar con el servidor. Comprueba tu conexión e inténtalo de nuevo.",
+          "error"
+        );
+        establecerEnvioEnCurso(false);
+      } else {
+        mostrarMensaje("El servidor no está disponible ahora mismo. Inténtalo de nuevo en un momento.", "error");
+        establecerEnvioEnCurso(false);
+      }
+    });
+  });
+})();
+</script>
+
 </body>
 </html>
