@@ -79,8 +79,6 @@ app.get("/", (req, res) => {
 });
 
 // ── Manejador de errores ──────────────────────────────────────────────
-// Va despues de todas las rutas. Convierte los errores de la subida
-// (archivo demasiado grande, no es PDF...) en un JSON legible.
 app.use((err, req, res, next) => {
   if (err instanceof multer.MulterError) {
     if (err.code === "LIMIT_FILE_SIZE") {
@@ -93,6 +91,13 @@ app.use((err, req, res, next) => {
 
   if (err && err.message === "SOLO_PDF") {
     return res.status(400).json({ mensaje: "Solo se permiten archivos PDF" });
+  }
+
+  const estado = err && (err.status || err.statusCode);
+  if (estado >= 400 && estado < 500) {
+    return res
+      .status(estado)
+      .json({ mensaje: estado === 404 ? "Archivo no encontrado" : "Petición no válida" });
   }
 
   if (err) {
