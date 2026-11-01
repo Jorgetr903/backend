@@ -10,6 +10,11 @@ const Recurso = require("../models/Recurso");
 
 const TIPOS_VALIDOS = ["formacion", "actividad", "dinamica"];
 
+// Los 3 grupos de siempre. Cualquier otro grupo se crea desde el
+// formulario ("Otro grupo...") y aparece en ese año para todos los monitores.
+const GRUPOS_BASE = ["Pequeños", "Medianos", "Mayores"];
+const MAX_LARGO_GRUPO = 30;
+
 function sanitizeFilename(originalName) {
   const extension = path.extname(originalName).toLowerCase();
   const baseName = path.basename(originalName, extension);
@@ -24,16 +29,13 @@ function sanitizeFilename(originalName) {
   return `${safeBaseName || "archivo"}${extension}`;
 }
 
-// ── Los PDFs se guardan en Cloudinary (ya no en el disco de Render) ──
+// ── Los PDFs se guardan en Cloudinary  ──
 const storage = new CloudinaryStorage({
   cloudinary,
   params: {
     folder: "recursos_csp",
-    resource_type: "raw", // conserva el PDF tal cual
+    resource_type: "raw", 
     public_id: (req, file) => {
-      // Multer recibe el nombre del archivo como latin1 aunque el navegador
-      // lo envie en UTF-8, y los acentos y la ñ llegan rotos. Lo recomponemos
-      // antes de limpiarlo. El nombre acaba en ".pdf": la app lo necesita.
       const nombreUtf8 = Buffer.from(file.originalname, "latin1").toString("utf8");
       return `${Date.now()}-${sanitizeFilename(nombreUtf8)}`;
     },
@@ -54,7 +56,7 @@ function pdfFileFilter(req, file, cb) {
 const upload = multer({
   storage,
   fileFilter: pdfFileFilter,
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB (limite del plan gratuito de Cloudinary)
+  limits: { fileSize: 10 * 1024 * 1024 },
 });
 
 // Si algo falla despues de subir el PDF, lo borramos de Cloudinary
@@ -70,6 +72,28 @@ async function borrarSubida(file) {
 
 function limpiar(valor) {
   return typeof valor === "string" ? valor.trim() : "";
+}
+
+// Nombre de grupo: sin caracteres raros ni espacios repetidos
+function limpiarGrupo(valor) {
+  if (typeof valor !== "string") return "";
+  return valor.replace(/[\u0000-\u001f\u007f]/g, "").replace(/\s+/g, " ").trim();
+}
+
+// Para comparar nombres sin fijarse en mayusculas ni acentos
+function claveGrupo(nombre) {
+  return nombre.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+}
+
+// Si el grupo ya existe (aunque cambien mayusculas o acentos), usamos su
+// escritura original para no crear duplicados.
+async function nombreDeGrupoCanonico(grupo) {
+  const clave = claveGrupo(grupo);
+  const usados = await Recurso.distinct("grupo", { tipo: "dinamica" });
+  const igual = GRUPOS_BASE.concat(usados).find(
+    (g) => typeof g === "string" && claveGrupo(limpiarGrupo(g)) === clave
+  );
+  return igual ? limpiarGrupo(igual) : grupo;
 }
 
 // Reglas de cada tipo (coinciden con los filtros de la app):
@@ -102,8 +126,13 @@ function validarCampos(body) {
   }
 
   if (tipo === "dinamica") {
-    const grupo = limpiar(body.grupo);
+    const grupo = limpiarGrupo(body.grupo);
     if (!grupo) return { error: "El grupo es obligatorio en las dinámicas" };
+    if (grupo.length > MAX_LARGO_GRUPO) {
+      return {
+        error: `El nombre del grupo es demasiado largo (máximo ${MAX_LARGO_GRUPO} caracteres)`,
+      };
+    }
     datos.grupo = grupo;
   }
 
@@ -116,6 +145,40 @@ router.get("/comprobar-clave", checkUploadKey, (req, res) => {
   res.json({ ok: true });
 });
 
+// Grupos que tienen dinamicas: de un año (?anio=2027) o de todos los años.
+// Primero los 3 de siempre, por su orden; despues los demas, por orden de aparicion.
+router.get("/grupos-dinamicas", async (req, res) => {
+  try {
+    const filtro = { tipo: "dinamica", grupo: { $ne: "" } };
+
+    const anioTexto = req.query.anio;
+    if (anioTexto !== undefined && anioTexto !== "") {
+      const anio = Number(anioTexto);
+      if (!Number.isInteger(anio)) {
+        return res.status(400).json({ mensaje: "El año no es válido" });
+      }
+      filtro.anio = anio;
+    }
+
+    // Recorremos las dinamicas de la mas antigua a la mas nueva y nos quedamos con
+    // cada grupo la primera vez que aparece.
+    const dinamicas = await Recurso.find(filtro, { grupo: 1 }).sort({ fecha: 1, _id: 1 }).lean();
+    const nombres = [];
+    for (const d of dinamicas) {
+      if (typeof d.grupo === "string" && d.grupo !== "" && !nombres.includes(d.grupo)) {
+        nombres.push(d.grupo);
+      }
+    }
+
+    const base = GRUPOS_BASE.filter((g) => nombres.includes(g));
+    const otros = nombres.filter((g) => !GRUPOS_BASE.includes(g));
+    res.json(base.concat(otros));
+  } catch (err) {
+    console.error("Error al obtener los grupos de dinamicas:", err);
+    res.status(500).json({ error: "Error al obtener los grupos de dinamicas" });
+  }
+});
+
 router.post("/subir", checkUploadKey, upload.single("archivo"), async (req, res) => {
   try {
     if (!req.file) {
@@ -126,6 +189,10 @@ router.post("/subir", checkUploadKey, upload.single("archivo"), async (req, res)
     if (error) {
       await borrarSubida(req.file);
       return res.status(400).json({ mensaje: error });
+    }
+
+    if (datos.tipo === "dinamica") {
+      datos.grupo = await nombreDeGrupoCanonico(datos.grupo);
     }
 
     datos.archivoUrl = req.file.path; // URL permanente en Cloudinary

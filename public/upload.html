@@ -85,6 +85,8 @@
 
   .ayuda { font-size: 12px; color: var(--gris); margin: 8px 0 0; }
 
+  .grupo-nuevo { margin-top: 8px; }
+
   .acceso-guardado {
     display: flex;
     align-items: center;
@@ -239,7 +241,13 @@
           <option value="Pequeños">Pequeños</option>
           <option value="Medianos">Medianos</option>
           <option value="Mayores">Mayores</option>
+          <option value="__otro__">Otro grupo...</option>
         </select>
+        <div class="grupo-nuevo" id="campoGrupoNuevo" style="display:none;">
+          <input type="text" id="grupoNuevo" maxlength="30" list="gruposConocidos" placeholder="Nombre del nuevo grupo" />
+          <datalist id="gruposConocidos"></datalist>
+          <p class="ayuda">Si ese grupo ya existe se usará el que hay. Si es nuevo, saldrá para todos los monitores durante este año.</p>
+        </div>
       </div>
 
       <div class="campo">
@@ -274,6 +282,9 @@
 
   var TAMANO_MAXIMO = 10 * 1024 * 1024; // 10 MB (limite de Cloudinary en el plan gratuito)
   var CLAVE_STORAGE = "csp_clave";
+  var GRUPOS_BASE = ["Pequeños", "Medianos", "Mayores"];
+  var OTRO_GRUPO = "__otro__";
+  var MAX_LARGO_GRUPO = 30;
 
   var form = document.getElementById("formSubida");
   var accesoGuardado = document.getElementById("accesoGuardado");
@@ -288,6 +299,9 @@
   var momentoInput = document.getElementById("momento");
   var campoGrupo = document.getElementById("campoGrupo");
   var grupoInput = document.getElementById("grupo");
+  var campoGrupoNuevo = document.getElementById("campoGrupoNuevo");
+  var grupoNuevoInput = document.getElementById("grupoNuevo");
+  var gruposConocidos = document.getElementById("gruposConocidos");
   var descripcionInput = document.getElementById("descripcion");
   var archivoInput = document.getElementById("archivo");
   var archivoBox = document.getElementById("archivoBox");
@@ -298,6 +312,7 @@
   var mensaje = document.getElementById("mensaje");
 
   var enCurso = false;
+  var peticionGrupos = 0; // para ignorar respuestas antiguas al cambiar de año
   var claveActual = ""; // clave en uso (guardada en el dispositivo o escrita ahora)
 
   // ── Clave guardada en el dispositivo ─────────────────────────────
@@ -359,7 +374,12 @@
     campoGrupo.style.display = tipo === "dinamica" ? "block" : "none";
   }
 
-  tipoInput.addEventListener("change", actualizarCampos);
+  tipoInput.addEventListener("change", function () {
+    actualizarCampos();
+    cargarGrupos();
+  });
+  anioInput.addEventListener("change", cargarGrupos);
+  grupoInput.addEventListener("change", actualizarGrupoNuevo);
 
   // Tipo preseleccionado desde la app: .../upload.html?tipo=actividad
   var tipoEnlace = new URLSearchParams(window.location.search).get("tipo");
@@ -369,6 +389,99 @@
 
   actualizarCampos();
   actualizarAcceso();
+  cargarGrupos();
+  cargarSugerencias();
+
+  // ── Grupos de las dinámicas ──────────────────────────────────────
+  // Siempre salen los 3 de siempre; se suman los que ya existan ese año y la
+  // opcion "Otro grupo..." para crear uno nuevo.
+  function limpiarNombreGrupo(texto) {
+    return texto.replace(/[\u0000-\u001f\u007f]/g, "").replace(/\s+/g, " ").trim();
+  }
+
+  function claveGrupo(texto) {
+    return texto.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  }
+
+  function anadirOpcionGrupo(valor, texto) {
+    var opcion = document.createElement("option");
+    opcion.value = valor;
+    opcion.textContent = texto;
+    grupoInput.appendChild(opcion);
+  }
+
+  function actualizarGrupoNuevo() {
+    campoGrupoNuevo.style.display = grupoInput.value === OTRO_GRUPO ? "block" : "none";
+  }
+
+  function reconstruirOpcionesGrupo(usados) {
+    var seleccionado = grupoInput.value;
+    var lista = GRUPOS_BASE.slice();
+    usados.forEach(function (g) {
+      if (typeof g === "string" && lista.indexOf(g) === -1) { lista.push(g); }
+    });
+
+    while (grupoInput.options.length > 0) { grupoInput.remove(0); }
+    anadirOpcionGrupo("", "Elige el grupo...");
+    lista.forEach(function (g) { anadirOpcionGrupo(g, g); });
+    anadirOpcionGrupo(OTRO_GRUPO, "Otro grupo...");
+
+    var sigueExistiendo = seleccionado === OTRO_GRUPO || lista.indexOf(seleccionado) !== -1;
+    grupoInput.value = sigueExistiendo ? seleccionado : "";
+    actualizarGrupoNuevo();
+  }
+
+  // Si el nombre escrito ya está en la lista devuelve el de la lista.
+  function buscarGrupoExistente(nombre) {
+    var clave = claveGrupo(nombre);
+    for (var i = 0; i < grupoInput.options.length; i++) {
+      var valor = grupoInput.options[i].value;
+      if (valor !== "" && valor !== OTRO_GRUPO && claveGrupo(limpiarNombreGrupo(valor)) === clave) {
+        return valor;
+      }
+    }
+    return "";
+  }
+
+  function pedirJson(url, alTerminar) {
+    var peticion = new XMLHttpRequest();
+    peticion.open("GET", url, true);
+    peticion.addEventListener("load", function () {
+      if (peticion.status !== 200) { alTerminar(null); return; }
+      try { alTerminar(JSON.parse(peticion.responseText)); } catch (e) { alTerminar(null); }
+    });
+    peticion.addEventListener("error", function () { alTerminar(null); });
+    peticion.send();
+  }
+
+  // Lista de grupos del año elegido
+  function cargarGrupos() {
+    var idPeticion = ++peticionGrupos;
+    reconstruirOpcionesGrupo([]);
+
+    var anio = anioInput.value;
+    if (tipoInput.value !== "dinamica" || !anio) { return; }
+
+    pedirJson("/api/recursos/grupos-dinamicas?anio=" + encodeURIComponent(anio), function (usados) {
+      if (idPeticion !== peticionGrupos || !Array.isArray(usados)) { return; }
+      reconstruirOpcionesGrupo(usados);
+    });
+  }
+
+  // Nombres de grupos de cualquier año, como sugerencia al escribir uno nuevo
+  function cargarSugerencias() {
+    pedirJson("/api/recursos/grupos-dinamicas", function (todos) {
+      if (!Array.isArray(todos)) { return; }
+      while (gruposConocidos.firstChild) { gruposConocidos.removeChild(gruposConocidos.firstChild); }
+      todos.forEach(function (g) {
+        if (typeof g === "string" && GRUPOS_BASE.indexOf(g) === -1) {
+          var opcion = document.createElement("option");
+          opcion.value = g;
+          gruposConocidos.appendChild(opcion);
+        }
+      });
+    });
+  }
 
   // ── Archivo ──────────────────────────────────────────────────────
   function formatearTamano(bytes) {
@@ -429,6 +542,8 @@
     descripcionInput.value = "";
     momentoInput.value = "";
     grupoInput.value = "";
+    grupoNuevoInput.value = "";
+    actualizarGrupoNuevo();
     archivoInput.value = "";
     actualizarArchivo();
   }
@@ -462,6 +577,8 @@
       if (xhr.status >= 200 && xhr.status < 300) {
         mostrarMensaje("✓ «" + titulo + "» subido correctamente.", "ok");
         reiniciarFormulario();
+        cargarGrupos(); // el grupo nuevo ya sale para este año
+        cargarSugerencias();
       } else if (xhr.status === 401) {
         claveRechazada();
       } else {
@@ -502,7 +619,27 @@
     if (!tipo) { mostrarMensaje("Elige el tipo de recurso.", "error"); tipoInput.focus(); return; }
     if (conAnio && !anio) { mostrarMensaje("Elige el año.", "error"); anioInput.focus(); return; }
     if (tipo === "actividad" && !momento) { mostrarMensaje("Elige el momento de la actividad.", "error"); momentoInput.focus(); return; }
-    if (tipo === "dinamica" && !grupo) { mostrarMensaje("Elige el grupo de la dinámica.", "error"); grupoInput.focus(); return; }
+    var grupoFinal = grupo;
+    var grupoNuevo = ""; // nombre de un grupo que todavía no existe este año
+    if (tipo === "dinamica") {
+      if (!grupo) { mostrarMensaje("Elige el grupo de la dinámica.", "error"); grupoInput.focus(); return; }
+      if (grupo === OTRO_GRUPO) {
+        var nombre = limpiarNombreGrupo(grupoNuevoInput.value);
+        if (!nombre) { mostrarMensaje("Escribe el nombre del nuevo grupo.", "error"); grupoNuevoInput.focus(); return; }
+        if (nombre.length > MAX_LARGO_GRUPO) {
+          mostrarMensaje("El nombre del grupo es demasiado largo (máximo " + MAX_LARGO_GRUPO + " caracteres).", "error");
+          grupoNuevoInput.focus();
+          return;
+        }
+        var existente = buscarGrupoExistente(nombre);
+        if (existente) {
+          grupoFinal = existente;
+        } else {
+          grupoFinal = nombre;
+          grupoNuevo = nombre;
+        }
+      }
+    }
 
     if (!archivo) { mostrarMensaje("Selecciona un archivo PDF.", "error"); return; }
 
@@ -520,6 +657,14 @@
     var clave = claveActual || claveInput.value.trim();
     if (!clave) { mostrarMensaje("Introduce la clave de acceso.", "error"); claveInput.focus(); return; }
 
+    // Crear un grupo nuevo lo verán todos los monitores: pedimos confirmación
+    if (grupoNuevo && !window.confirm(
+      "Vas a crear el grupo «" + grupoNuevo + "» para el año " + anio + ". " +
+      "A partir de ahora saldrá para todos los monitores. ¿Es correcto?"
+    )) {
+      return;
+    }
+
     // Solo se envian los campos que corresponden al tipo elegido
     var datos = new FormData();
     datos.append("titulo", titulo);
@@ -527,7 +672,7 @@
     if (descripcion) { datos.append("descripcion", descripcion); }
     if (conAnio) { datos.append("anio", anio); }
     if (tipo === "actividad") { datos.append("momento", momento); }
-    if (tipo === "dinamica") { datos.append("grupo", grupo); }
+    if (tipo === "dinamica") { datos.append("grupo", grupoFinal); }
     datos.append("archivo", archivo);
 
     establecerEnvioEnCurso(true, "Comprobando acceso...");
