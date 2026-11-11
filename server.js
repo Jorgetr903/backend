@@ -74,6 +74,8 @@ app.use("/api/recursos", require("./routes/recursos"));
 
 app.use('/api/kiosko', kioskoRoutes);
 
+app.use("/api/plannings", require("./routes/plannings"));
+
 app.get("/", (req, res) => {
   res.send("Servidor de Recursos Monitores funcionando!");
 });

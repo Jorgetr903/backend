@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="robots" content="noindex, nofollow" />
+<title>CSP · Generador de plannings</title>
+<style>
+  :root { --verde:#4CAF50; --verde-o:#388E3C; --azul:#2196F3; --fondo:#F5F5F5; --texto:#212121; --gris:#757575; --borde:#E0E0E0; --rojo:#D32F2F; --ambar:#F9A825; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; background:var(--fondo); color:var(--texto); }
+  header { background:var(--verde); color:#fff; padding:18px 16px; text-align:center; }
+  header h1 { margin:0; font-size:21px; } header p { margin:4px 0 0; font-size:13px; opacity:.9; }
+  main { max-width:860px; margin:0 auto; padding:16px 12px 80px; }
+  .card { background:#fff; border-radius:14px; padding:16px; margin-bottom:14px; box-shadow:0 2px 8px rgba(0,0,0,.08); }
+  .card h2 { font-size:14px; text-transform:uppercase; letter-spacing:.04em; color:var(--gris); margin:0 0 12px; }
+  label { display:block; font-size:13px; font-weight:600; margin:10px 0 4px; }
+  input[type=text], input[type=number], input[type=password], select { width:100%; padding:9px; border:1.5px solid var(--borde); border-radius:8px; font-size:15px; font-family:inherit; background:#fff; }
+  input:focus, select:focus { outline:none; border-color:var(--verde); }
+  .ayuda { font-size:12px; color:var(--gris); margin:4px 0 0; }
+  .fila { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  .fila > * { flex:1 1 auto; }
+  button { cursor:pointer; font-family:inherit; }
+  .btn { background:var(--azul); color:#fff; border:none; padding:10px 16px; border-radius:8px; font-weight:600; font-size:14px; }
+  .btn.verde { background:var(--verde); } .btn.rojo { background:var(--rojo); } .btn.gris { background:#9E9E9E; }
+  .btn.grande { width:100%; padding:14px; font-size:16px; }
+  .btn:disabled { opacity:.45; cursor:not-allowed; }
+  .btn.mini { padding:4px 9px; font-size:12px; }
+  .chip { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:700; color:#fff; background:#9E9E9E; white-space:nowrap; }
+  .chip.COMPLETA, .chip.clara, .chip.ok, .chip.manual { background:var(--verde); }
+  .chip.PENDIENTE, .chip.sin_coincidencia, .chip.pendiente { background:var(--rojo); }
+  .chip.probable { background:#7CB342; } .chip.dudosa, .chip.dudoso { background:var(--ambar); color:#212121; }
+  .chip.sin_documento, .chip.no_necesita { background:#9E9E9E; }
+  .cat { border:1.5px solid var(--borde); border-radius:10px; padding:10px; margin-top:10px; }
+  .cat-cab { display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; }
+  .cat-nombre { font-weight:700; font-size:14px; } .cat-ayuda { font-size:12px; color:var(--gris); }
+  .doc { display:flex; flex-wrap:wrap; gap:6px 10px; align-items:center; padding:6px 0; border-top:1px solid #f0f0f0; font-size:13px; }
+  .doc .n { flex:1 1 200px; word-break:break-word; }
+  .doc select { width:auto; font-size:12px; padding:3px; }
+  .destinos label { display:inline-block; font-weight:400; margin:0 8px 0 0; font-size:12px; }
+  .dia { border:1.5px solid var(--borde); border-radius:10px; margin-top:8px; }
+  .dia > summary { padding:9px 12px; cursor:pointer; font-weight:700; font-size:14px; display:flex; gap:8px; align-items:center; }
+  .dia.mal > summary { border-left:5px solid var(--rojo); } .dia.bien > summary { border-left:5px solid var(--verde); }
+  .it { padding:8px 12px; border-top:1px solid #f0f0f0; font-size:13px; }
+  .it .t { font-weight:600; } .it .h { color:var(--gris); margin-right:6px; }
+  .it .lin { margin-top:4px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+  .it select, .it input[type=text] { width:auto; font-size:12px; padding:4px; min-width:140px; }
+  .inc { padding:8px 10px; border-radius:8px; margin-top:6px; font-size:13px; display:flex; gap:8px; align-items:center; justify-content:space-between; flex-wrap:wrap; }
+  .inc.critica { background:#FFEBEE; border:1.5px solid var(--rojo); } .inc.aviso { background:#FFF8E1; border:1.5px solid var(--ambar); }
+  .msg { padding:10px; border-radius:8px; margin-top:10px; font-size:13px; display:none; }
+  .msg.ok { display:block; background:#E8F5E9; border:1.5px solid var(--verde); color:var(--verde-o); }
+  .msg.error { display:block; background:#FFEBEE; border:1.5px solid var(--rojo); color:var(--rojo); }
+  .drop { border:2px dashed var(--borde); border-radius:10px; padding:16px; text-align:center; }
+  .barra { height:8px; background:var(--borde); border-radius:4px; overflow:hidden; margin-top:10px; display:none; }
+  .barra div { height:100%; width:30%; background:var(--azul); animation:mov 1.2s linear infinite; }
+  @keyframes mov { 0%{margin-left:-30%} 100%{margin-left:100%} }
+  .check-ok { color:var(--verde-o); } .check-fail { color:var(--rojo); font-weight:700; }
+  ul.chk { margin:6px 0 0; padding-left:18px; font-size:12px; }
+  .oculto { display:none !important; }
+  .paso { font-size:11px; background:var(--verde); color:#fff; border-radius:50%; width:20px; height:20px; display:inline-flex; align-items:center; justify-content:center; margin-right:6px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Generador de plannings</h1>
+  <p>CSP · Se genera un ZIP con el Word editable y el PDF de cada planning</p>
+</header>
+<main>
+
+  <div class="card" id="cardAcceso" style="display:none">
+    <h2>Acceso</h2>
+    <label for="clave">Clave de acceso</label>
+    <input type="password" id="clave" autocomplete="off" />
+    <p class="ayuda">Es la misma clave que usas para subir recursos. Se guarda en este dispositivo.</p>
+    <button class="btn verde" id="guardarClave" style="margin-top:10px">Entrar</button>
+  </div>
+
+  <div id="app" class="oculto">
+
+    <div class="card" id="cardInicio">
+      <h2><span class="paso">1</span>Preparar el campamento</h2>
+      <div class="fila">
+        <div><label for="anio">Año</label><input type="number" id="anio" min="2000" max="2100" /></div>
+        <div><label for="niveles">Niveles (separados por comas)</label><input type="text" id="niveles" value="Pequeños, Medianos, Mayores" /></div>
+      </div>
+      <label for="lema">Lema de la portada <span class="ayuda">(vacío = el de siempre)</span></label>
+      <input type="text" id="lema" />
+      <label for="enfermera">Nombre de la enfermera <span class="ayuda">(vacío = se deja el texto del año anterior)</span></label>
+      <input type="text" id="enfermera" />
+      <div class="fila" style="margin-top:14px">
+        <button class="btn verde" id="btnCrear">Empezar</button>
+        <button class="btn gris oculto" id="btnReiniciar">Empezar de cero (borra los archivos)</button>
+      </div>
+      <p class="ayuda">Los archivos que subas se guardan solo de forma temporal en el servidor y se borran al terminar o a las 3 horas sin actividad. No se envían a ningún otro servicio.</p>
+    </div>
+
+    <div id="sesion" class="oculto">
+
+      <div class="card">
+        <h2><span class="paso">2</span>Documentos</h2>
+        <div class="drop">
+          <input type="file" id="archivosAuto" multiple accept=".docx,.xlsx,.pdf,.zip" style="display:none" />
+          <button class="btn verde" id="btnAuto" type="button">Elegir archivos o un .zip</button>
+          <p class="ayuda">Puedes soltar aquí todo junto (también un .zip). Se clasifica por el nombre: los Excel van a «Información general», lo que se llame «Oración…» a Oraciones, «Alergias/Menú/Dinámicas…» a su categoría y el resto a Actividades. Después puedes mover cualquier archivo.</p>
+        </div>
+        <div id="categorias"></div>
+        <div class="barra" id="barraSubida"><div></div></div>
+        <div class="msg" id="msgSubida"></div>
+      </div>
+
+      <div class="card">
+        <h2><span class="paso">3</span>Revisión previa</h2>
+        <div id="resumen"></div>
+        <div id="incidencias"></div>
+        <label style="display:flex;gap:6px;align-items:center;font-weight:400"><input type="checkbox" id="soloProblemas" /> Mostrar solo los días con problemas</label>
+        <div id="dias"></div>
+        <div id="oraciones"></div>
+      </div>
+
+      <div class="card">
+        <h2><span class="paso">4</span>Qué plannings generar</h2>
+        <div id="plannings"></div>
+        <label>Bloques fijos que se incluyen en todos</label>
+        <div id="bloques"></div>
+      </div>
+
+      <div class="card">
+        <h2><span class="paso">5</span>Generar</h2>
+        <button class="btn verde grande" id="btnGenerar" disabled>Generar plannings</button>
+        <div class="barra" id="barraGen"><div></div></div>
+        <div class="msg" id="msgGen"></div>
+        <div id="informe"></div>
+        <button class="btn grande oculto" id="btnDescargar" style="margin-top:10px">⬇ Descargar ZIP</button>
+        <button class="btn rojo mini oculto" id="btnBorrar" style="margin-top:14px">Borrar todos los archivos del servidor</button>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+(function () {
+  "use strict";
+  var CLAVE_STORAGE = "csp_clave";
+  var SES_STORAGE = "csp_planning_sesion";
+  var BASE = "/api/plannings";
+  var clave = "", sesionId = "", estado = null, timerGen = null, enAccion = false;
+
+  function $(id) { return document.getElementById(id); }
+  function el(tag, props, kids) {
+    var e = document.createElement(tag);
+    if (props) Object.keys(props).forEach(function (k) {
+      if (k === "text") e.textContent = props[k];
+      else if (k === "class") e.className = props[k];
+      else if (k.slice(0, 2) === "on") e.addEventListener(k.slice(2), props[k]);
+      else e.setAttribute(k, props[k]);
+    });
+    (kids || []).forEach(function (c) { if (c) e.appendChild(typeof c === "string" ? document.createTextNode(c) : c); });
+    return e;
+  }
+  function chip(txt, cls) { return el("span", { class: "chip " + (cls || txt), text: String(txt).replace(/_/g, " ") }); }
+  function lsGet(k) { try { return localStorage.getItem(k) || ""; } catch (e) { return ""; } }
+  function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+  function ssGet(k) { try { return sessionStorage.getItem(k) || ""; } catch (e) { return ""; } }
+  function ssSet(k, v) { try { v ? sessionStorage.setItem(k, v) : sessionStorage.removeItem(k); } catch (e) {} }
+
+  function api(method, path, body, isForm) {
+    var opts = { method: method, headers: { "x-upload-key": clave } };
+    if (body && !isForm) { opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(body); }
+    if (isForm) opts.body = body;
+    return fetch(BASE + path, opts).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) {
+        if (!r.ok) { var e = new Error(j.mensaje || ("Error " + r.status)); e.status = r.status; e.data = j; throw e; }
+        return j;
+      });
+    });
+  }
+  function msg(id, tipo, texto) { var m = $(id); m.className = "msg " + (tipo || ""); m.textContent = texto || ""; }
+
+  // ── Acceso ──
+  var hash = /#k=([^&]+)/.exec(location.hash);
+  if (hash) { lsSet(CLAVE_STORAGE, decodeURIComponent(hash[1])); history.replaceState(null, "", location.pathname + location.search); }
+  clave = lsGet(CLAVE_STORAGE);
+  function arrancar() {
+    $("cardAcceso").style.display = "none"; $("app").classList.remove("oculto");
+    var sid = ssGet(SES_STORAGE);
+    var prom = Promise.resolve();
+    $("anio").value = new Date().getFullYear();
+    if (sid) {
+      sesionId = sid;
+      prom = refrescar().catch(function () { sesionId = ""; ssSet(SES_STORAGE, ""); });
+    }
+    return prom;
+  }
+  if (clave) arrancar(); else $("cardAcceso").style.display = "block";
+  $("guardarClave").onclick = function () { clave = $("clave").value.trim(); if (clave) { lsSet(CLAVE_STORAGE, clave); arrancar(); } };
+
+  // ── Sesión ──
+  $("btnCrear").onclick = function () {
+    var niveles = $("niveles").value.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
+    api("POST", "/sesiones", { anio: +$("anio").value, niveles: niveles, lema: $("lema").value, enfermera: $("enfermera").value })
+      .then(function (r) { sesionId = r.id; ssSet(SES_STORAGE, sesionId); return refrescar(); })
+      .catch(function (e) { alert(e.message); });
+  };
+  $("btnReiniciar").onclick = function () {
+    if (!confirm("Se borrarán todos los archivos subidos y lo generado. ¿Seguro?")) return;
+    api("DELETE", "/sesiones/" + sesionId).catch(function () {}).then(function () {
+      sesionId = ""; ssSet(SES_STORAGE, ""); estado = null; render();
+    });
+  };
+  $("btnBorrar").onclick = $("btnReiniciar").onclick;
+
+  function refrescar() {
+    return api("GET", "/sesiones/" + sesionId).then(function (e) { estado = e; render(); if (e.generacion && e.generacion.estado === "generando") vigilar(); });
+  }
+  function parchear(body) {
+    if (enAccion) return Promise.resolve();
+    enAccion = true;
+    return api("PATCH", "/sesiones/" + sesionId, body).then(function (e) { estado = e; render(); }).catch(function (e) { alert(e.message); }).then(function () { enAccion = false; });
+  }
+
+  // ── Subida ──
+  function subir(categoria, files) {
+    if (!files || !files.length) return;
+    var fd = new FormData();
+    fd.append("categoria", categoria);
+    for (var i = 0; i < files.length; i++) fd.append("archivos", files[i], files[i].name);
+    $("barraSubida").style.display = "block"; msg("msgSubida", "", "");
+    api("POST", "/sesiones/" + sesionId + "/documentos", fd, true)
+      .then(function (r) { mostrarSubida(r); }, function (e) { mostrarSubida(e.data && e.data.errores ? e.data : { errores: [e.message] }); })
+      .then(refrescar)
+      .then(function () { $("barraSubida").style.display = "none"; });
+  }
+  function mostrarSubida(r) {
+    var t = [];
+    if (r.anadidos && r.anadidos.length) t.push("Añadidos: " + r.anadidos.length);
+    if (r.ignorados && r.ignorados.length) t.push("Ignorados (formato no válido): " + r.ignorados.join(", "));
+    if (r.errores && r.errores.length) t.push(r.errores.join(" · "));
+    msg("msgSubida", r.errores && r.errores.length ? "error" : "ok", t.join(" — "));
+  }
+  $("btnAuto").onclick = function () { $("archivosAuto").click(); };
+  $("archivosAuto").onchange = function (e) { subir("auto", e.target.files); e.target.value = ""; };
+
+  // ── Pintado ──
+  var DESTINOS_CAT = ["dinamicas", "alergias", "menu", "enfermeria", "coordinacion", "direccion", "otros"];
+
+  function render() {
+    var haySesion = !!(estado && sesionId);
+    $("sesion").classList.toggle("oculto", !haySesion);
+    $("btnReiniciar").classList.toggle("oculto", !haySesion);
+    $("cardInicio").classList.toggle("oculto", haySesion);
+    if (!haySesion) return;
+    pintarCategorias(); pintarRevision(); pintarPlannings(); pintarGeneracion();
+  }
+
+  function pintarCategorias() {
+    var rev = estado.revision, cont = $("categorias");
+    cont.innerHTML = "";
+    var nombres = {}; rev.categorias.forEach(function (c) { nombres[c.id] = c.nombre; });
+    rev.categorias.forEach(function (c) {
+      var docs = rev.documentos.filter(function (d) { return d.categoria === c.id; });
+      var inp = el("input", { type: "file", multiple: "multiple", accept: ".docx,.xlsx,.pdf,.zip", style: "display:none" });
+      inp.onchange = function () { subir(c.id, inp.files); };
+      var cab = el("div", { class: "cat-cab" }, [
+        el("div", {}, [el("span", { class: "cat-nombre", text: c.nombre + " " }), chip(c.estado), el("div", { class: "cat-ayuda", text: c.motivo || c.ayuda })]),
+        el("div", { class: "fila", style: "flex:0 0 auto" }, [
+          el("button", { class: "btn mini", text: "+ Subir", onclick: function () { inp.click(); } }),
+          (c.id !== "general" && !docs.length) ? el("button", { class: "btn mini gris", text: c.marcadaNA ? "Marcar como necesaria" : "No aplicable", onclick: function () { var o = {}; o[c.id] = c.marcadaNA ? "" : "na"; parchear({ categorias: o }); } }) : null
+        ])
+      ]);
+      var box = el("div", { class: "cat" }, [cab, inp]);
+      docs.forEach(function (d) { box.appendChild(filaDoc(d, nombres)); });
+      cont.appendChild(box);
+    });
+  }
+  function filaDoc(d, nombres) {
+    var rev = estado.revision;
+    var f = el("div", { class: "doc" });
+    f.appendChild(el("div", { class: "n", text: d.nombre + "  (" + d.tipo + ", " + Math.max(1, Math.round(d.tamano / 1024)) + " KB)" }));
+    if (d.aviso) f.appendChild(el("span", { class: "ayuda", text: d.aviso }));
+    if (d.categoria === "general") {
+      var sel = el("select", { onchange: function () { var o = {}; o[d.id] = { rol: sel.value }; parchear({ docs: o }); } });
+      [["principal", "Tabla principal"], ["turnos", "Tabla de turnos"], ["contactos", "Contactos (portada)"], ["tabla", "Otra tabla"], ["documento", "Documento"]].forEach(function (p) {
+        var op = el("option", { value: p[0], text: p[1] }); if (d.rol === p[0]) op.selected = true; sel.appendChild(op);
+      });
+      f.appendChild(sel);
+    }
+    if (d.categoria === "dinamicas") {
+      var sn = el("select", { onchange: function () { var o = {}; o[d.id] = { nivel: sn.value || null, destinos: sn.value ? ["nivel-" + slug(sn.value)] : [] }; parchear({ docs: o }); } });
+      sn.appendChild(el("option", { value: "", text: "¿Nivel?" }));
+      rev.niveles.forEach(function (n) { var op = el("option", { value: n, text: n }); if (d.nivel === n) op.selected = true; sn.appendChild(op); });
+      f.appendChild(sn);
+    }
+    if (DESTINOS_CAT.indexOf(d.categoria) >= 0 && d.categoria !== "dinamicas") {
+      var dd = el("div", { class: "destinos" }, [el("span", { class: "ayuda", text: "Va a: " })]);
+      rev.plannings.forEach(function (p) {
+        var cb = el("input", { type: "checkbox" }); cb.checked = (d.destinos || []).indexOf(p.id) >= 0;
+        cb.onchange = function () {
+          var cur = (d.destinos || []).filter(function (x) { return x !== p.id; }); if (cb.checked) cur.push(p.id);
+          var o = {}; o[d.id] = { destinos: cur }; parchear({ docs: o });
+        };
+        dd.appendChild(el("label", {}, [cb, " " + p.nombre.replace("Planning ", "")]));
+      });
+      f.appendChild(dd);
+    }
+    var mover = el("select", { onchange: function () { if (!mover.value) return; var o = {}; o[d.id] = { categoria: mover.value }; parchear({ docs: o }); } });
+    mover.appendChild(el("option", { value: "", text: "Mover a…" }));
+    rev.categorias.forEach(function (c) { if (c.id !== d.categoria) mover.appendChild(el("option", { value: c.id, text: c.nombre })); });
+    f.appendChild(mover);
+    f.appendChild(el("button", { class: "btn mini rojo", text: "Quitar", onclick: function () {
+      api("DELETE", "/sesiones/" + sesionId + "/documentos/" + d.id).then(refrescar).catch(function (e) { alert(e.message); });
+    } }));
+    return f;
+  }
+  function slug(s) { return String(s).normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9 ]/g, "").trim().replace(/\s+/g, "-"); }
+
+  function pintarRevision() {
+    var rev = estado.revision;
+    $("resumen").innerHTML = "";
+    $("resumen").appendChild(el("p", { class: "ayuda", text: rev.criticas + " problema(s) por resolver · " + rev.avisos + " aviso(s)" }));
+    var ci = $("incidencias"); ci.innerHTML = "";
+    rev.incidencias.filter(function (i) { return !i.key; }).forEach(function (i) {
+      var b = el("div", { class: "inc " + i.nivel }, [el("span", { text: i.mensaje })]);
+      if (i.sugerida && i.docId) {
+        b.appendChild(el("button", { class: "btn mini", text: "Mover a " + i.sugerida, onclick: function () { var o = {}; o[i.docId] = { categoria: i.sugerida }; parchear({ docs: o }); } }));
+      }
+      ci.appendChild(b);
+    });
+    var actDocs = rev.documentos.filter(function (d) { return d.categoria === "actividades"; });
+    var oraDocs = rev.documentos.filter(function (d) { return d.categoria === "oraciones"; });
+    var solo = $("soloProblemas").checked;
+    var cd = $("dias"); cd.innerHTML = "";
+    rev.dias.forEach(function (d) {
+      var malos = d.items.filter(function (i) { return itemMalo(i); }).length;
+      if (solo && !malos) return;
+      var det = el("details", { class: "dia " + (malos ? "mal" : "bien") });
+      if (malos) det.open = true;
+      det.appendChild(el("summary", {}, [d.titulo, malos ? chip(malos + " por revisar", "PENDIENTE") : chip("OK", "ok")]));
+      d.items.forEach(function (i) { det.appendChild(filaItem(i, actDocs, oraDocs)); });
+      if (d.servicios && d.servicios.length) {
+        det.appendChild(el("div", { class: "it" }, [el("span", { class: "ayuda", text: "Otros turnos del día: " + d.servicios.map(function (s) { return s.tarea + " (" + s.nombres.join(", ") + ")"; }).join(" · ") })]));
+      }
+      cd.appendChild(det);
+    });
+    var co = $("oraciones"); co.innerHTML = "";
+    if (rev.oraciones.length) {
+      co.appendChild(el("label", { text: "Oraciones detectadas (día y tipo, corregibles)" }));
+      rev.oraciones.forEach(function (o) {
+        var dia = el("input", { type: "text", value: o.dia || "", placeholder: "L27", style: "width:70px" });
+        var tipo = el("select", {}, [el("option", { value: "dia", text: "de día" }), el("option", { value: "noche", text: "de noche" })]);
+        tipo.value = o.tipo === "noche" ? "noche" : "dia";
+        var go = function () { var x = {}; x[o.docId] = { dia: dia.value || null, noche: tipo.value === "noche" }; parchear({ docs: x }); };
+        dia.onchange = go; tipo.onchange = go;
+        co.appendChild(el("div", { class: "doc" }, [el("div", { class: "n", text: o.nombre }), dia, tipo]));
+      });
+    }
+  }
+  $("soloProblemas").onchange = function () { if (estado) pintarRevision(); };
+
+  function itemMalo(i) {
+    var cf = i.documento && i.documento.confianza;
+    var docMalo = ["actividad", "especial", "oracion_dia", "oracion_noche"].indexOf(i.tipo) >= 0 && (!i.documentoIds || !i.documentoIds.length) && ["sin_documento", "no_necesita", "manual"].indexOf(cf) < 0 && !i.repetido;
+    var rMalo = i.responsables && i.responsables.estado !== "ok";
+    return docMalo || rMalo;
+  }
+
+  function filaItem(i, actDocs, oraDocs) {
+    var box = el("div", { class: "it" });
+    box.appendChild(el("div", {}, [el("span", { class: "h", text: i.hora || "" }), el("span", { class: "t", text: i.texto })]));
+    var lin = el("div", { class: "lin" });
+    var conDoc = ["actividad", "especial", "oracion_dia", "oracion_noche"].indexOf(i.tipo) >= 0;
+    if (conDoc) {
+      var cf = i.documento && i.documento.confianza;
+      lin.appendChild(el("span", { class: "ayuda", text: i.tipo.indexOf("oracion") === 0 ? "Oración:" : "Documento:" }));
+      lin.appendChild(chip(cf === "sin_coincidencia" ? "sin coincidencia" : cf, cf));
+      var lista = i.tipo.indexOf("oracion") === 0 ? oraDocs : actDocs;
+      var sel = el("select", { onchange: function () {
+        var o = {}; var v = sel.value;
+        o[i.key] = v === "__none" ? { sinDocumento: true } : v === "__auto" ? { sinDocumento: false, docIds: [] } : { docIds: [v] };
+        parchear({ items: o });
+      } });
+      sel.appendChild(el("option", { value: "__auto", text: i.repetido ? "(se desarrolla el día " + i.primerDia + ")" : (i.documentos && i.documentos.length ? i.documentos.join(" + ") : "— elegir documento —") }));
+      lista.forEach(function (d) { sel.appendChild(el("option", { value: d.id, text: d.nombre })); });
+      sel.appendChild(el("option", { value: "__none", text: "— No necesita documento —" }));
+      if (i.manual && i.documentoIds && i.documentoIds.length) sel.value = i.documentoIds[0];
+      if (cf === "sin_documento") sel.value = "__none";
+      lin.appendChild(sel);
+      if (cf === "dudosa" && i.documento && i.documento.candidatos && i.documento.candidatos[0] && (!i.documentoIds || !i.documentoIds.length)) {
+        var c0 = i.documento.candidatos[0];
+        lin.appendChild(el("button", { class: "btn mini verde", text: "Confirmar «" + c0.nombre + "»", onclick: function () { var o = {}; o[i.key] = { docIds: [c0.docId] }; parchear({ items: o }); } }));
+      }
+    }
+    if (i.responsables) {
+      var r = i.responsables;
+      lin.appendChild(el("span", { class: "ayuda", text: "Responsables:" }));
+      lin.appendChild(chip(r.estado, r.estado));
+      var inp = el("input", { type: "text", value: (r.nombres || []).join(", "), placeholder: "Nombres separados por comas" });
+      inp.onchange = function () { var o = {}; o[i.key] = { nombres: inp.value.split(",").map(function (s) { return s.trim(); }).filter(Boolean) }; parchear({ items: o }); };
+      lin.appendChild(inp);
+      if (r.base === "todos" && r.nombres.length > 1) lin.appendChild(el("span", { class: "ayuda", text: "(ninguno en negrita: todos)" }));
+      if (r.motivo) lin.appendChild(el("span", { class: "ayuda", text: r.motivo }));
+      if (r.estado !== "ok" && r.candidatos && r.candidatos.length) {
+        lin.appendChild(el("span", { class: "ayuda", text: "Posibles: " + r.candidatos.map(function (c) { return (c.bold ? "*" : "") + c.name; }).join(", ") }));
+      }
+    }
+    box.appendChild(lin);
+    return box;
+  }
+
+  function pintarPlannings() {
+    var rev = estado.revision, cont = $("plannings");
+    cont.innerHTML = "";
+    rev.plannings.forEach(function (p) {
+      var cb = el("input", { type: "checkbox" }); cb.checked = p.seleccionado;
+      cb.onchange = function () {
+        var sel = rev.plannings.filter(function (x) { return x.id === p.id ? cb.checked : x.seleccionado; }).map(function (x) { return x.id; });
+        parchear({ config: { plannings: sel } });
+      };
+      cont.appendChild(el("div", { class: "doc" }, [cb, el("div", { class: "n", text: p.nombre }), p.tipo === "especial" ? el("span", { class: "ayuda", text: "Necesita: " + p.requiere.join(", ") }) : null]));
+    });
+    var cb2 = $("bloques"); cb2.innerHTML = "";
+    estado.bloques.forEach(function (b) {
+      var c = el("input", { type: "checkbox" }); c.checked = b.activo; c.disabled = !b.disponible;
+      c.onchange = function () { var o = {}; o[b.id] = c.checked; parchear({ config: { bloques: o } }); };
+      cb2.appendChild(el("div", { class: "doc" }, [c, el("div", { class: "n", text: b.titulo }), b.aviso ? el("span", { class: "ayuda", text: "⚠ " + b.aviso }) : null]));
+    });
+  }
+
+  // ── Generación ──
+  function pintarGeneracion() {
+    var rev = estado.revision, g = estado.generacion;
+    var gen = g && g.estado === "generando";
+    $("btnGenerar").disabled = !rev.puedeGenerar || gen;
+    $("btnGenerar").textContent = rev.puedeGenerar ? "Generar plannings" : "Resuelve " + rev.criticas + " problema(s) para poder generar";
+    $("barraGen").style.display = gen ? "block" : "none";
+    var inf = $("informe"); inf.innerHTML = "";
+    $("btnDescargar").classList.toggle("oculto", !(g && g.estado === "listo"));
+    $("btnBorrar").classList.toggle("oculto", !(g && g.estado === "listo"));
+    if (gen) msg("msgGen", "ok", "Generando… " + (g.progreso && g.progreso.planning ? g.progreso.planning + " (" + g.progreso.fase + ")" : ""));
+    else if (g && g.estado === "error") msg("msgGen", "error", g.error || "Ha fallado la generación");
+    else if (g && g.estado === "listo") msg("msgGen", g.informe.todoCorrecto ? "ok" : "error", g.informe.todoCorrecto ? "Todo generado y comprobado. Ya puedes descargar el ZIP." : "Generado, pero alguna comprobación ha fallado: revisa el informe.");
+    else msg("msgGen", "", "");
+    if (g && g.informe && g.informe.plannings) {
+      if (g.informe.avisoPdf) inf.appendChild(el("p", { class: "ayuda", text: "ℹ " + g.informe.avisoPdf }));
+      g.informe.plannings.forEach(function (p) {
+        var ul = el("ul", { class: "chk" });
+        (p.checks || []).forEach(function (c) { ul.appendChild(el("li", { class: c.ok ? "check-ok" : "check-fail", text: (c.ok ? "✔ " : "✘ ") + c.nombre + (c.detalle ? " – " + c.detalle : "") })); });
+        (p.avisos || []).forEach(function (a) { ul.appendChild(el("li", { text: "⚠ " + a })); });
+        (p.errores || []).forEach(function (a) { ul.appendChild(el("li", { class: "check-fail", text: "ERROR: " + a })); });
+        inf.appendChild(el("details", {}, [el("summary", { text: p.nombre + (p.paginas ? " · " + p.paginas + " págs" : "") }), ul]));
+      });
+    }
+  }
+  $("btnGenerar").onclick = function () {
+    api("POST", "/sesiones/" + sesionId + "/generar", {}).then(function () { vigilar(); }).catch(function (e) { alert(e.message); });
+  };
+  function vigilar() {
+    clearTimeout(timerGen);
+    timerGen = setTimeout(function () {
+      api("GET", "/sesiones/" + sesionId).then(function (e) {
+        estado = e; pintarGeneracion();
+        if (e.generacion && e.generacion.estado === "generando") vigilar(); else render();
+      }).catch(function () { vigilar(); });
+    }, 2000);
+  }
+  $("btnDescargar").onclick = function () {
+    fetch(BASE + "/sesiones/" + sesionId + "/descarga", { headers: { "x-upload-key": clave } })
+      .then(function (r) { if (!r.ok) throw new Error("No se pudo descargar"); return r.blob(); })
+      .then(function (b) {
+        var a = document.createElement("a"); a.href = URL.createObjectURL(b);
+        a.download = "Plannings_CSP_" + estado.config.anio + ".zip"; document.body.appendChild(a); a.click();
+        setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+      }).catch(function (e) { alert(e.message); });
+  };
+})();
+</script>
+</body>
+</html>
