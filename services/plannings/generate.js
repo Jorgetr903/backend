@@ -10,6 +10,7 @@ const { PDFDocument } = require("pdf-lib");
 const { PlanningBuilder, parseXml } = require("./docxmerge");
 const { esc, run, para } = require("./ooxml");
 const R = require("./renderers");
+const { FONT_LIGHT } = R;
 const { analyze } = require("./analysis");
 const { norm } = require("./textutil");
 
@@ -18,16 +19,30 @@ const BASE_DIR = path.join(__dirname, "..", "..", "assets", "plannings", "base")
 const MOTTO_DEFECTO = "¡¡CAMPAMENTO SANTA PAULA, QUE ALEGRÍA QUE GOZADA Y QUE BIEN NOS LO VAMOS A PASAR, AUNQUE HAYA QUE CURRAR!!";
 
 const BLOQUES = [
-  { id: "consejos", archivo: "consejos-y-normas.docx", titulo: "Consejos y normas" },
-  { id: "servicio-extra", archivo: "servicio-extra.docx", titulo: "Servicio extra", aviso: "Texto del planning 2025 (nombres y ejemplos): revísalo o sube tu versión en «Información general»" },
-  { id: "telefonos", archivo: "telefonos-de-interes.docx", titulo: "Teléfonos de interés", aviso: "Texto del planning 2025: confirma que los teléfonos siguen vigentes o sube tu versión" },
-  { id: "primeros-auxilios", archivo: "primeros-auxilios.docx", titulo: "Primeros auxilios" },
-  { id: "altus", archivo: "montaje-de-altus.docx", titulo: "Montaje de Altus" },
-  { id: "formacion", archivo: "formacion-dinamicas-oraciones.docx", titulo: "Formación: dinámicas y oraciones" },
+  { id: "consejos", archivo: "consejos-y-normas.docx", titulo: "Consejos y normas", indice: "CONSEJOS Y NORMAS QUE SANTA PAULA NOS DA:" },
+  { id: "servicio-extra", archivo: "servicio-extra.docx", titulo: "Servicio extra", indice: "SERVICIO EXTRA", aviso: "Texto del planning 2025 (nombres y ejemplos): revísalo o sube tu versión en «Información general»" },
+  { id: "telefonos", archivo: "telefonos-de-interes.docx", titulo: "Teléfonos de interés", indice: "TELEFONOS DE INTERÉS", aviso: "Texto del planning 2025: confirma que los teléfonos siguen vigentes o sube tu versión" },
+  {
+    id: "primeros-auxilios",
+    titulo: "Guía de primeros auxilios",
+    partes: [
+      { archivo: "primeros-auxilios-rcp-pediatrica.docx", titulo: "GUÍA DE PRIMEROS AUXILIOS - RCP PEDIÁTRICA:", level: 1 },
+      { archivo: "primeros-auxilios-rcp-adulto.docx", titulo: "GUÍA DE PRIMEROS AUXILIOS - RCP ADULTO:", level: 2 },
+      { archivo: "primeros-auxilios-ovace-pediatrica.docx", titulo: "GUÍA DE PRIMEROS AUXILIOS - OVACE PEDIÁTRICA:", level: 1 },
+      { archivo: "primeros-auxilios-ovace-adulto.docx", titulo: "GUÍA DE PRIMEROS AUXILIOS - OVACE ADULTO:", level: 2 },
+    ],
+  },
+  { id: "altus", archivo: "montaje-de-altus.docx", titulo: "Montaje de Altus", indice: "MONTAJE DE ALTUS" },
+  { id: "formacion", archivo: "formacion-dinamicas-oraciones.docx", titulo: "Formación: dinámicas y oraciones", indice: "FORMACIÓN DINÁMICAS/ORACIONES" },
 ];
 
 function catalogoBloques() {
-  return BLOQUES.map((b) => ({ id: b.id, titulo: b.titulo, aviso: b.aviso || null, disponible: fs.existsSync(path.join(BASE_DIR, b.archivo)) }));
+  return BLOQUES.map((b) => ({
+    id: b.id,
+    titulo: b.titulo,
+    aviso: b.aviso || null,
+    disponible: (b.partes || [b]).every((p) => fs.existsSync(path.join(BASE_DIR, p.archivo))),
+  }));
 }
 
 // ───────────────────────── PDF (solo si hay LibreOffice) ─────────────────────────
@@ -93,60 +108,153 @@ async function replaceInDocx(buffer, from, to) {
   let xml = await f.async("string");
   if (!xml.includes(from)) return { buffer, found: false };
   xml = xml.split(from).join(to);
-  zip.file("word/document.xml", xml);
+  zip.file("word/document.xml", xml, { createFolders: false });
   return { buffer: await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }), found: true };
 }
 
+function imageSize(buf) {
+  // PNG
+  if (buf.length > 24 && buf.readUInt32BE(0) === 0x89504e47) return { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20), ext: "png" };
+  // JPEG
+  if (buf[0] === 0xff && buf[1] === 0xd8) {
+    let i = 2;
+    while (i + 9 < buf.length) {
+      if (buf[i] !== 0xff) {
+        i++;
+        continue;
+      }
+      const m = buf[i + 1];
+      if (m >= 0xc0 && m <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(m)) return { h: buf.readUInt16BE(i + 5), w: buf.readUInt16BE(i + 7), ext: "jpg" };
+      i += 2 + buf.readUInt16BE(i + 2);
+    }
+    return { w: 1, h: 1, ext: "jpg" };
+  }
+  return null;
+}
+
+/** Sustituye una imagen de un DOCX por otra (conserva el ancho y ajusta el alto a la nueva proporción) */
+async function replaceImageInDocx(buffer, mediaName, newBuf) {
+  const info = imageSize(newBuf);
+  if (!info) return { buffer, found: false };
+  const zip = await JSZip.loadAsync(buffer);
+  const relsFile = zip.file("word/_rels/document.xml.rels");
+  const docFile = zip.file("word/document.xml");
+  if (!relsFile || !docFile) return { buffer, found: false };
+  let rels = await relsFile.async("string");
+  let doc = await docFile.async("string");
+  const m = new RegExp(`<Relationship [^>]*Id="([^"]+)"[^>]*Target="media/${mediaName.replace(/\./g, "\\.")}"[^>]*/>`).exec(rels) || new RegExp(`<Relationship [^>]*Target="media/${mediaName.replace(/\./g, "\\.")}"[^>]*Id="([^"]+)"[^>]*/>`).exec(rels);
+  if (!m) return { buffer, found: false };
+  const rid = m[1];
+  const newName = `logo_anio.${info.ext}`;
+  rels = rels.replace(m[0], m[0].replace(`media/${mediaName}`, `media/${newName}`));
+  zip.remove(`word/media/${mediaName}`);
+  zip.file(`word/media/${newName}`, newBuf, { createFolders: false });
+  zip.file("word/_rels/document.xml.rels", rels, { createFolders: false });
+  const ctFile = zip.file("[Content_Types].xml");
+  if (ctFile) {
+    let ct = await ctFile.async("string");
+    if (!new RegExp(`Extension="${info.ext}"`, "i").test(ct)) {
+      ct = ct.replace("<Default ", `<Default Extension="${info.ext}" ContentType="${info.ext === "png" ? "image/png" : "image/jpeg"}"/><Default `);
+      zip.file("[Content_Types].xml", ct, { createFolders: false });
+    }
+  }
+  // ajustar el alto del dibujo que usa esa imagen
+  doc = doc.replace(/<w:drawing>[\s\S]*?<\/w:drawing>/g, (d) => {
+    if (!d.includes(`r:embed="${rid}"`)) return d;
+    const ext = /<wp:extent cx="(\d+)" cy="(\d+)"\/>/.exec(d);
+    if (!ext) return d;
+    const cx = +ext[1];
+    const cy = Math.round((cx * info.h) / info.w);
+    return d.replace(/<wp:extent cx="\d+" cy="\d+"\/>/, `<wp:extent cx="${cx}" cy="${cy}"/>`).replace(/<a:ext cx="\d+" cy="\d+"\/>/g, `<a:ext cx="${cx}" cy="${cy}"/>`);
+  });
+  zip.file("word/document.xml", doc, { createFolders: false });
+  return { buffer: await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }), found: true };
+}
+
+const FONT = R.FONT;
+
 function indexXml(entries) {
-  const tabs = '<w:tab w:val="right" w:leader="dot" w:pos="9638"/>';
-  const lines = entries.map((e) =>
-    para(
-      run(e.title, { size: e.level === 1 ? 10.5 : 9.5, bold: e.level === 1, font: "Arial" }) +
-        "<w:r><w:tab/></w:r>" +
-        `<w:fldSimple w:instr=" PAGEREF ${esc(e.bookmark.name)} \\h "><w:r><w:rPr><w:sz w:val="${e.level === 1 ? 21 : 19}"/></w:rPr><w:t>–</w:t></w:r></w:fldSimple>`,
-      { tabs, after: e.level === 1 ? 20 : 0, before: e.level === 1 ? 60 : 0, indent: e.level === 1 ? 0 : 340 }
+  const tabs = `<w:tab w:val="right" w:leader="dot" w:pos="${R.W_PORTRAIT}"/>`;
+  return entries
+    .map((e) =>
+      para(
+        run(e.title, { size: 11, font: FONT }) +
+          "<w:r><w:tab/></w:r>" +
+          `<w:fldSimple w:instr=" PAGEREF ${esc(e.bookmark.name)} \\h "><w:r><w:rPr><w:rFonts w:ascii="${FONT}" w:hAnsi="${FONT}" w:cs="${FONT}"/><w:sz w:val="22"/></w:rPr><w:t>–</w:t></w:r></w:fldSimple>`,
+        { tabs, after: 0, before: 0, line: 252, indent: e.level === 1 ? 0 : 220 }
+      )
     )
+    .join("");
+}
+
+const normaliza = (s) => norm(s || "");
+
+/** ¿La hoja es de este planning? (los plannings por nivel solo llevan la hoja de su nivel) */
+function hojaDelPlanning(planning, niveles, todasLasHojas) {
+  if (planning.tipo !== "nivel") return () => true;
+  const key = (n) => normaliza(n).replace(/\s+/g, "").slice(0, 5);
+  const propia = key(planning.nivel);
+  const algunaPorNivel = todasLasHojas.some((h) => niveles.some((n) => normaliza(h).replace(/\s+/g, "").includes(key(n))));
+  if (!algunaPorNivel) return () => true; // las hojas no están separadas por nivel
+  return (h) => normaliza(h).replace(/\s+/g, "").includes(propia);
+}
+
+/**
+ * Líneas extra que se escriben dentro de las celdas del día:
+ * «Resp: NOMBRES» bajo cada actividad y «Servir / Guardia / Quiosco»
+ * en las filas rutinarias correspondientes. Solo con datos seguros.
+ */
+function lineasExtraDia(dm) {
+  const extra = new Map();
+  const push = (r, c, line) => {
+    const k = `${r},${c}`;
+    if (!extra.has(k)) extra.set(k, []);
+    extra.get(k).push(line);
+  };
+  const porCelda = new Map();
+  for (const it of dm.items) {
+    const nombres = it.responsables && it.responsables.estado === "ok" ? it.responsables.nombres : [];
+    if (!nombres.length) continue;
+    const [, r, c] = it.key.split("|");
+    const k = `${r},${c}`;
+    if (!porCelda.has(k)) porCelda.set(k, []);
+    porCelda.get(k).push({ it, nombres });
+  }
+  for (const [k, lista] of porCelda) {
+    const [r, c] = k.split(",").map(Number);
+    for (const { it, nombres } of lista) {
+      const etiqueta = lista.length > 1 ? `Resp. ${it.texto.replace(/\s+/g, " ").slice(0, 28)}: ` : "Resp: ";
+      push(r, c, { runs: [{ text: etiqueta, bold: false }, { text: R.nombresTexto(nombres), bold: true }] });
+    }
+  }
+  // servicio de comida, guardia y quiosco en sus filas
+  const serv = (re) => (dm.servicios || []).find((s) => re.test(s.key) && s.names && s.names.length);
+  const hechos = new Set();
+  dm.day.rows.forEach((row, ri) =>
+    row.cells.forEach((cell, ci) => {
+      if (cell.covered) return;
+      for (const l of cell.lines) {
+        const n = normaliza(l.text);
+        let tipo = null;
+        if (/^comida\b/.test(n)) tipo = ["Servir", /servir/];
+        else if (/^buenas noches/.test(n)) tipo = ["Guardia", /guardia/];
+        else if (n === "tl") tipo = ["Quiosco", /kiosko|quiosco/];
+        if (!tipo || hechos.has(tipo[0])) continue;
+        const s = serv(tipo[1]);
+        if (!s) continue;
+        hechos.add(tipo[0]);
+        push(ri, ci, { runs: [{ text: `${tipo[0]}: `, bold: false }, { text: R.nombresTexto(s.names), bold: true }] });
+      }
+    })
   );
-  return lines.join("");
-}
-
-function responsablesTexto(r) {
-  if (!r) return "—";
-  if (!r.nombres.length) return "—";
-  let t = r.nombres.join(", ");
-  if (r.base === "todos" && r.nombres.length > 1) t += "  (todos los asignados)";
-  return t;
-}
-
-function dayXml(dm, bookmark, { conTurnos }) {
-  let xml = R.heading(dm.titulo, { bookmark });
-  xml += R.timetableXml(dm.day);
-  xml += para("", { after: 160 });
-  const filas = dm.items.filter((i) => ["actividad", "especial", "oracion_dia", "oracion_noche", "oracion_monitores"].includes(i.tipo));
-  if (conTurnos && filas.length) {
-    const rows = filas.map((i) => {
-      let nota = "";
-      if (i.repetido) nota = `\n(se desarrolla el día ${i.primerDia})`;
-      else if (i.especial && i.docIds.length) nota = "\n(se desarrolla a continuación)";
-      return [i.hora || "", i.texto + nota, responsablesTexto(i.responsables)];
-    });
-    xml += para(run("RESPONSABLES", { bold: true, size: 10, font: "Arial" }), { after: 60, keepNext: true });
-    xml += R.simpleTable(["Hora", "Actividad", "Responsables"], rows, [800, 5000, 3838], { size: 8.5 });
-    xml += para("", { after: 120 });
-  }
-  const serv = (dm.servicios || []).filter((s) => s.names && s.names.length);
-  if (serv.length) {
-    xml += para(run("TURNOS DEL DÍA", { bold: true, size: 10, font: "Arial" }), { after: 60, keepNext: true });
-    xml += R.simpleTable(["Tarea", "Encargados"], serv.map((s) => [s.task, s.names.join(", ")]), [5200, 4438], { size: 8.5 });
-  }
-  return xml;
+  return extra;
 }
 
 // ───────────────────────── Un planning ─────────────────────────
 
 async function buildPlanning(session, model, planning, onWarn) {
   const cfg = session.config;
-  const b = new PlanningBuilder({ year: cfg.anio, lema: cfg.lema || "" });
+  const b = new PlanningBuilder({ year: cfg.anio, lema: cfg.lema || "", tema: cfg.tema || "" });
   const log = []; // registro de lo incluido, para las comprobaciones
   const entries = []; // índice
   const avisos = [];
@@ -154,14 +262,15 @@ async function buildPlanning(session, model, planning, onWarn) {
   const warn = (m) => {
     if (!avisos.includes(m)) avisos.push(m);
   };
+  const niveles = (cfg.niveles && cfg.niveles.length ? cfg.niveles : ["Pequeños", "Medianos", "Mayores"]).map(String);
 
   const readDoc = (d) => fs.promises.readFile(d.path);
 
-  const addDoc = async (doc, { title, level = 2, type, day = null, special = null, buffer = null }) => {
+  const addDoc = async (doc, { title, level = 2, type, day = null, special = null, buffer = null, noIndex = false }) => {
     const bm = b.nextBookmark();
     try {
       await b.addDocx(buffer || (await readDoc(doc)), { bookmark: bm });
-      entries.push({ title, level, bookmark: bm });
+      if (!noIndex) entries.push({ title, level, bookmark: bm });
       log.push({ type, day, docId: doc ? doc.id : null, categoria: doc ? doc.categoria : "base", special, titulo: title });
       return true;
     } catch (e) {
@@ -170,82 +279,166 @@ async function buildPlanning(session, model, planning, onWarn) {
     }
   };
 
-  // — Bloques fijos —
+  // Logo del año (subido como imagen) → portada/índice y bloque de teléfonos
+  const logoDoc = model.docsAll.find((d) => d.categoria === "logo" && !d.excluir);
+  let logoBuf = null;
+  let logoInfo = null;
+  if (logoDoc) {
+    try {
+      logoBuf = await readDoc(logoDoc);
+      logoInfo = imageSize(logoBuf);
+      if (!logoInfo) {
+        logoBuf = null;
+        warn(`No se reconoce el formato del logo "${logoDoc.nombre}" (usa PNG o JPG).`);
+      }
+    } catch (e) {
+      warn(`No se pudo leer el logo del año: ${e.message}`);
+    }
+  } else {
+    warn("No se ha subido el logo del año: el índice no lo lleva y el bloque «Teléfonos de interés» conserva el logo del planning de referencia (2025).");
+  }
+
+  // Documentos de información general por rol
   const general = model.docsAll.filter((d) => d.categoria === "general" && !d.excluir);
+  const paraEste = (d) => (d.destinosEfectivos || ["todos"]).some((x) => x === "todos" || x === planning.id);
   const generalDocx = general.filter((d) => d.ext === ".docx");
-  const upServicio = generalDocx.find((d) => /servicio/.test(norm(d.nombre)));
+  const upServicio = generalDocx.find((d) => /servicio extra/.test(norm(d.nombre)));
   const upTelef = generalDocx.find((d) => /telefon/.test(norm(d.nombre)));
-  const otrosGeneral = generalDocx.filter((d) => d !== upServicio && d !== upTelef && (d.destinosEfectivos || ["todos"]).some((x) => x === "todos" || x === planning.id));
-  const tablas = general.filter((d) => d.rolDetectado === "tabla" && d.ext === ".xlsx");
-  const contactos = general.filter((d) => d.rolDetectado === "contactos" && d.ext === ".xlsx");
+  const rol = (r) => general.filter((d) => d.rolDetectado === r && paraEste(d));
+  const contactos = general.filter((d) => d.rolDetectado === "contactos");
+  const tablasExtra = general.filter((d) => d.rolDetectado === "tabla" && d.ext === ".xlsx" && paraEste(d));
+  const otrosGeneral = generalDocx.filter((d) => d !== upServicio && d !== upTelef && d.rolDetectado === "documento" && paraEste(d));
   const on = (id) => cfg.bloques[id] !== false;
 
+  // — Bloques fijos —
   for (const bl of BLOQUES) {
     if (!on(bl.id)) continue;
     if (bl.id === "servicio-extra" && upServicio) {
-      await addDoc(upServicio, { title: bl.titulo, level: 1, type: "base", special: bl.id });
+      await addDoc(upServicio, { title: bl.indice, level: 1, type: "base", special: bl.id });
       continue;
     }
     if (bl.id === "telefonos" && upTelef) {
-      await addDoc(upTelef, { title: bl.titulo, level: 1, type: "base", special: bl.id });
+      await addDoc(upTelef, { title: bl.indice, level: 1, type: "base", special: bl.id });
       continue;
     }
-    let buf;
-    try {
-      buf = await readBase(bl.archivo);
-    } catch (_) {
-      errores.push(`Falta el bloque fijo "${bl.titulo}" en el servidor`);
-      continue;
+    for (const parte of bl.partes || [bl]) {
+      let buf;
+      try {
+        buf = await readBase(parte.archivo);
+      } catch (_) {
+        errores.push(`Falta el bloque fijo "${bl.titulo}" en el servidor`);
+        continue;
+      }
+      if (bl.id === "consejos" && cfg.enfermera) {
+        const r = await replaceInDocx(buf, "Enfermera (Mar)", `Enfermera (${cfg.enfermera})`);
+        if (r.found) buf = r.buffer;
+        else warn("No se encontró el nombre de la enfermera en «Consejos y normas»; revísalo a mano.");
+      }
+      if (bl.id === "telefonos" && logoBuf) {
+        const r = await replaceImageInDocx(buf, "image103.png", logoBuf);
+        if (r.found) buf = r.buffer;
+        else warn("No se pudo sustituir el logo del año en «Teléfonos de interés»; revísalo a mano.");
+      }
+      if (bl.aviso) warn(`${bl.titulo}: ${bl.aviso}`);
+      await addDoc(null, { title: parte.indice || parte.titulo, level: parte.level || 1, type: "base", special: bl.id, buffer: buf });
     }
-    if (bl.id === "consejos" && cfg.enfermera) {
-      const r = await replaceInDocx(buf, "Enfermera (Mar)", `Enfermera (${cfg.enfermera})`);
-      if (r.found) buf = r.buffer;
-      else warn("No se encontró el nombre de la enfermera en «Consejos y normas»; revísalo a mano.");
-    }
-    if (bl.aviso) warn(`${bl.titulo}: ${bl.aviso}`);
-    await addDoc(null, { title: bl.titulo, level: 1, type: "base", special: bl.id, buffer: buf });
   }
 
-  // — Tabla de turnos y tablas generales —
+  // — Tabla de turnos (apaisada, una sola tabla) —
   if (model.tu) {
     const bm = b.nextBookmark();
-    b.addGenerated(para("", { bookmark: bm, after: 0 }) + R.turnosXml(model.tu));
-    entries.push({ title: "Tabla de turnos", level: 1, bookmark: bm });
-    log.push({ type: "turnos" });
+    b.addGenerated(R.title("TABLA DE TURNOS", { bookmark: bm }) + R.turnosXml(model.tu), { landscape: true });
+    entries.push({ title: "TABLA DE TURNOS", level: 1, bookmark: bm });
+    log.push({ type: "turnos", landscape: true });
   }
-  for (const t of tablas) {
-    const { xml, warnings } = await R.sheetsToXml(await readDoc(t));
+
+  // — Grupos de nivel (tiendas), grupos de trabajo y servicio de comedor —
+  const tablaGrupos = async (docs, etiqueta, tipo) => {
+    for (const d of docs) {
+      if (d.ext === ".docx") {
+        await addDoc(d, { title: etiqueta, level: 1, type: tipo });
+        continue;
+      }
+      let primera = true;
+      const wbSheets = await (async () => {
+        const wb = await require("./xlsxReader").loadWorkbook(await readDoc(d));
+        return wb.worksheets.map((w) => w.name);
+      })();
+      const { xml, warnings, sheets } = await R.sheetsToXml(await readDoc(d), {
+        landscape: true,
+        pageBreaks: true,
+        sheetFilter: hojaDelPlanning(planning, niveles, wbSheets),
+        onSheet: (nombre) => {
+          const bm = b.nextBookmark();
+          const generica = /^hoja\s*\d*$/i.test(nombre) || wbSheets.length === 1;
+          entries.push({ title: generica ? etiqueta : `${etiqueta}${primera ? "" : ""} – ${nombre}`, level: primera || generica ? 1 : 2, bookmark: bm });
+          primera = false;
+          return R.anchor(bm);
+        },
+      });
+      warnings.forEach(warn);
+      if (!sheets.length) {
+        warn(`«${d.nombre}»: no hay ninguna hoja para ${planning.nombre}; no se incluye.`);
+        continue;
+      }
+      b.addGenerated(xml, { landscape: true });
+      log.push({ type: tipo, landscape: true, docId: d.id, categoria: d.categoria });
+    }
+  };
+  await tablaGrupos(rol("grupos_nivel"), "TIENDAS", "grupos_nivel");
+  await tablaGrupos(rol("grupos_trabajo"), "GRUPOS DE TRABAJO", "grupos_trabajo");
+  await tablaGrupos(rol("servicio"), "DISTRIBUCIÓN Y SERVICIOS DE LOS GRUPOS DE TRABAJO EN EL COMEDOR", "servicio");
+
+  // otras tablas generales y documentos generales
+  for (const t of tablasExtra) {
+    const bm = b.nextBookmark();
+    const { xml, warnings } = await R.sheetsToXml(await readDoc(t), { landscape: true, pageBreaks: true });
     warnings.forEach(warn);
     if (xml) {
-      const bm = b.nextBookmark();
-      b.addGenerated(para("", { bookmark: bm, after: 0 }) + R.heading(t.nombre, { size: 14 }) + xml);
+      b.addGenerated(R.anchor(bm) + xml, { landscape: true });
       entries.push({ title: t.nombre, level: 1, bookmark: bm });
+      log.push({ type: "tabla_general", landscape: true });
     }
   }
   for (const d of otrosGeneral) await addDoc(d, { title: d.nombre, level: 1, type: "extra_general" });
 
+  // — Planning general (varias páginas apaisadas, 5 días por página) —
+  const diasNormales = model.dias.filter((d) => d.kind !== "lluvia");
+  if (diasNormales.length) {
+    const bm = b.nextBookmark();
+    const pags = R.generalPlanningPages(diasNormales.map((d) => ({ ...d.day, headFill: null })), { perPage: 5 });
+    pags.forEach((t, i) => {
+      b.addGenerated((i === 0 ? R.title("Planning General del Campamento", { bookmark: bm }) : "") + t, { landscape: true });
+    });
+    entries.push({ title: "Planning General del Campamento", level: 1, bookmark: bm });
+    log.push({ type: "planning_general", landscape: true, paginas: pags.length });
+  }
+
   // — Días —
-  const conTurnos = !!model.tu;
+  let ordinal = 0;
   for (const dm of model.dias) {
     const bm = b.nextBookmark();
-    b.addGenerated(dayXml(dm, bm, { conTurnos: conTurnos && dm.kind !== "lluvia" }));
-    entries.push({ title: dm.titulo, level: 1, bookmark: bm });
-    log.push({ type: "horario", day: dm.label });
+    if (dm.kind !== "lluvia") ordinal++;
+    const dia = R.withExtraLines(dm.day, lineasExtraDia(dm));
+    const meta = {};
+    b.addGenerated(R.anchor(bm) + R.dayTableXml(dia, { ordinal, meta }), { landscape: true });
+    entries.push({ title: dm.kind === "lluvia" ? dm.titulo.replace(/^DÍA DE LLUVIA/, "DÍA DE LLUVIA") : `${dm.label}: ${dm.day.title || ""}`.trim().replace(/:$/, ""), level: 1, bookmark: bm });
+    log.push({ type: "horario", day: dm.label, landscape: true, meta, conResp: Array.from(lineasExtraDia(dm).values()).flat().filter((l) => l.runs && /^Resp/.test(l.runs[0].text)).length });
     const byId = (id) => model.docsAll.find((d) => d.id === id);
     for (const id of dm.oracionDia) {
       const d = byId(id);
-      if (d) await addDoc(d, { title: `Oración de la mañana – ${dm.label}`, type: "oracion_dia", day: dm.label });
+      if (d) await addDoc(d, { title: `Oración de la mañana – ${dm.label}`, type: "oracion_dia", day: dm.label, noIndex: true });
     }
     for (const it of dm.items) {
       if (!["actividad", "especial"].includes(it.tipo)) continue;
       for (const id of it.docIds) {
         const d = byId(id);
-        if (d) await addDoc(d, { title: it.texto, type: "actividad", day: dm.label, special: it.especial });
+        if (d) await addDoc(d, { title: it.texto, level: 2, type: "actividad", day: dm.label, special: it.especial });
       }
     }
     for (const id of dm.oracionNoche) {
       const d = byId(id);
-      if (d) await addDoc(d, { title: `Oración de la noche – ${dm.label}`, type: "oracion_noche", day: dm.label });
+      if (d) await addDoc(d, { title: `Oración de la noche – ${dm.label}`, type: "oracion_noche", day: dm.label, noIndex: true });
     }
   }
 
@@ -253,12 +446,12 @@ async function buildPlanning(session, model, planning, onWarn) {
   for (const cat of ["alergias", "menu", "enfermeria", "coordinacion", "direccion", "otros"]) {
     for (const d of model.docsAll.filter((x) => x.categoria === cat && !x.excluir && (x.destinosEfectivos || []).includes(planning.id))) {
       if (d.ext === ".xlsx") {
-        const { xml, warnings } = await R.sheetsToXml(await readDoc(d), { size: 7.5 });
-        warnings.forEach(warn);
         const bm = b.nextBookmark();
-        b.addGenerated(para("", { bookmark: bm, after: 0 }) + R.heading(d.nombre, { size: 14 }) + (xml || para(run("(Hoja vacía)"))));
+        const { xml, warnings } = await R.sheetsToXml(await readDoc(d), { landscape: true, pageBreaks: true });
+        warnings.forEach(warn);
+        b.addGenerated(R.anchor(bm) + (xml || para(run("(Hoja vacía)", { font: FONT }))), { landscape: true });
         entries.push({ title: d.nombre, level: 1, bookmark: bm });
-        log.push({ type: "extra", categoria: cat, docId: d.id });
+        log.push({ type: "extra", categoria: cat, docId: d.id, landscape: true });
       } else if (d.ext === ".docx") {
         await addDoc(d, { title: d.nombre, level: 1, type: "extra" });
       }
@@ -270,22 +463,34 @@ async function buildPlanning(session, model, planning, onWarn) {
     await addDoc(d, { title: `Dinámicas – ${d.nombre}`, level: 1, type: "dinamica" });
   }
 
-  // — Portada e índice (al principio) —
-  let cover = para(run(`PLANNING CSP ${cfg.anio}`, { bold: true, size: 30, font: "Arial" }), { style: "PlTitulo", align: "center", before: 1200, after: 120 });
-  cover += para(run(planning.nombre.toUpperCase(), { bold: true, size: 20, font: "Arial" }), { align: "center", after: 360 });
-  cover += para(run(cfg.lema || MOTTO_DEFECTO, { italic: true, size: 12, font: "Arial" }), { align: "center", after: 480 });
-  for (const c of contactos) {
-    const { xml, warnings } = await R.sheetsToXml(await readDoc(c), { size: 8.5 });
-    warnings.forEach(warn);
-    cover += xml;
+  // — Portada (título, contactos de los monitores, lema) —
+  const bmPortada = b.nextBookmark();
+  entries.unshift({ title: `Campamento Santa Paula ${cfg.anio}`, level: 1, bookmark: bmPortada });
+  let cover = para(run(`Campamento Santa Paula ${cfg.anio}`, { font: FONT_LIGHT }), { style: "PlTitulo", after: 60, bookmark: bmPortada });
+  if (contactos.length) {
+    for (const c of contactos) {
+      const { xml, warnings } = await R.sheetsToXml(await readDoc(c), { landscape: false, boldFirstCol: true, size: 10.5 });
+      warnings.forEach(warn);
+      cover += xml;
+    }
   }
-  cover += R.heading("ÍNDICE", { pageBreakBefore: true, size: 16 }) + indexXml(entries);
+  cover += para(run(cfg.lema || MOTTO_DEFECTO, { font: FONT_LIGHT, size: 16 }), { align: "center", before: 200, after: 0 });
   b.chunks.unshift(cover + para("", { sectPr: b.sectPrXml(), after: 0 }));
+
+  // — Índice (formato del planning: título, entradas Calibri 11, logo del año debajo) —
+  let idx = para(run("ÍNDICE", { font: FONT_LIGHT }), { style: "PlIndice", after: 120 }) + indexXml(entries);
+  if (logoBuf && logoInfo) {
+    const rid = b.registerImage(logoBuf, logoInfo.ext);
+    const cy = 1180000;
+    const cx = Math.round((cy * logoInfo.w) / logoInfo.h);
+    idx += para(b.imageXml(rid, cx, cy, `Logo CSP ${cfg.anio}`), { align: "center", before: 160, after: 0 });
+  }
+  b.chunks.splice(1, 0, idx + para("", { sectPr: b.sectPrXml(), after: 0 }));
 
   // — Construcción —
   const buffer = await b.build();
   b.warnings.forEach(warn);
-  return { buffer, log, entries, avisos, errores, stats: b.stats };
+  return { buffer, log, entries, avisos, errores, stats: b.stats, logo: !!logoBuf };
 }
 
 // ───────────────────────── Comprobaciones previas a la entrega ─────────────────────────
@@ -294,10 +499,12 @@ async function verify(planning, model, built) {
   const checks = [];
   const add = (nombre, ok, detalle = "") => checks.push({ n: checks.length + 1, nombre, ok: !!ok, detalle });
   let xml = "";
+  let stylesXml = "";
   let validDoc = false;
   try {
     const zip = await JSZip.loadAsync(built.buffer);
     xml = await zip.file("word/document.xml").async("string");
+    stylesXml = await zip.file("word/styles.xml").async("string");
     parseXml(xml);
     validDoc = true;
   } catch (e) {
@@ -305,19 +512,30 @@ async function verify(planning, model, built) {
   }
   if (validDoc) add("El documento Word es válido y se puede abrir", true);
 
+  // páginas apaisadas: turnos, grupos, planning general y días
   const pgs = [...xml.matchAll(/<w:pgSz[^>]*>/g)].map((m) => m[0]);
-  const horizontales = pgs.filter((p) => /orient="landscape"/.test(p) || (() => {
+  const apaisadas = pgs.filter((p) => {
     const w = +(/w:w="(\d+)"/.exec(p) || [])[1];
     const h = +(/w:h="(\d+)"/.exec(p) || [])[1];
-    return w && h && w > h;
-  })());
-  add("Todas las páginas están en vertical", horizontales.length === 0, horizontales.length ? `${horizontales.length} secciones horizontales` : `${pgs.length} secciones, todas verticales`);
+    return /orient="landscape"/.test(p) || (w && h && w > h);
+  }).length;
+  const esperadas = built.log.filter((l) => l.landscape).reduce((n, l) => n + (l.paginas || 1), 0);
+  add("Turnos, grupos, planning general y días están en páginas apaisadas", apaisadas >= esperadas && esperadas > 0, `${apaisadas} secciones apaisadas (se esperaban al menos ${esperadas})`);
+
+  add("El texto base es Calibri 11 (como el planning de referencia)", /<w:docDefaults>[\s\S]*Calibri[\s\S]*<w:sz w:val="22"\/>/.test(stylesXml));
 
   const diasLog = built.log.filter((l) => l.type === "horario").map((l) => l.day);
   const diasModelo = model.dias.map((d) => d.label);
   add("Están todos los días de la tabla principal", diasLog.length === diasModelo.length, `${diasLog.length} de ${diasModelo.length}`);
   add("Los días siguen el orden de la tabla principal", JSON.stringify(diasLog) === JSON.stringify(diasModelo));
-  add("Cada día lleva su tabla de horario", diasLog.length === diasModelo.length);
+  const noCaben = built.log.filter((l) => l.type === "horario" && l.meta && l.meta.cabe === false).map((l) => l.day);
+  const pequeno = built.log.filter((l) => l.type === "horario" && l.meta && l.meta.size < 7).map((l) => l.day);
+  add("La tabla de cada día cabe en una página", noCaben.length === 0, noCaben.length ? `No caben: ${noCaben.join(", ")}` : "");
+  add("La letra de las tablas de día es legible (≥ 7 pt)", pequeno.length === 0, pequeno.length ? `Muy pequeña en: ${pequeno.join(", ")}` : "");
+
+  const esperadosResp = model.dias.reduce((n, d) => n + d.items.filter((i) => i.responsables && i.responsables.estado === "ok" && i.responsables.nombres.length).length, 0);
+  const respEnTablas = built.log.filter((l) => l.type === "horario").reduce((n, l) => n + (l.conResp || 0), 0);
+  add("Los responsables están dentro de la tabla de cada día", !model.tu || respEnTablas >= esperadosResp, `${respEnTablas} de ${esperadosResp} actividades`);
 
   const esperadasAct = model.dias.reduce((n, d) => n + d.items.filter((i) => ["actividad", "especial"].includes(i.tipo)).reduce((m, i) => m + i.docIds.length, 0), 0);
   const incluidasAct = built.log.filter((l) => l.type === "actividad").length;
@@ -344,6 +562,15 @@ async function verify(planning, model, built) {
   add("La oración del día va justo después del horario", ordenOk);
   add("La oración de la noche va al final de cada día", ordenOk && nocheOk);
 
+  // orden de los bloques generales: turnos → tiendas → grupos de trabajo → servicio → planning general → primer día
+  {
+    const orden = ["turnos", "grupos_nivel", "grupos_trabajo", "servicio", "planning_general", "horario"];
+    const pos = orden.map((t) => built.log.findIndex((l) => l.type === t));
+    const presentes = pos.filter((p) => p >= 0);
+    const ok = presentes.every((p, i) => i === 0 || p > presentes[i - 1]);
+    add("Turnos → grupos de nivel → grupos de trabajo → servicio → planning general → primer día", ok, orden.filter((t, i) => pos[i] >= 0).join(" → "));
+  }
+
   const cuenta = (s) => built.log.filter((l) => l.special === s && l.type === "actividad").length;
   add("Olimpiadas se desarrollan una sola vez", cuenta("olimpiadas") <= 1, `${cuenta("olimpiadas")} vez/veces`);
   add("Tiempo libre dirigido se desarrolla una sola vez", cuenta("tld") <= 1, `${cuenta("tld")} vez/veces`);
@@ -363,7 +590,12 @@ async function verify(planning, model, built) {
   });
   add("Alergias y menú solo aparecen donde corresponde", mal.length === 0);
 
+  // portada: título del campamento antes del índice, y contactos de los monitores
+  const iTitulo = xml.indexOf(`Campamento Santa Paula ${model.anio || ""}`.trim());
+  const iIndice = xml.indexOf("ÍNDICE");
+  add("La portada (con los contactos de los monitores) va antes del índice", iTitulo >= 0 && iIndice > iTitulo && (!model.hayContactos || /@/.test(xml.slice(iTitulo, iIndice))), model.hayContactos ? "" : "No se han subido contactos");
   add("El índice recoge todas las secciones", built.entries.length > 0, `${built.entries.length} entradas`);
+  add("El logo del año está en el índice", !!built.logo, built.logo ? "" : "No se ha subido el logo del año");
   const ids = built.log.filter((l) => l.docId && l.type !== "base").map((l) => l.docId);
   const dup = ids.filter((id, i) => ids.indexOf(id) !== i);
   add("No hay documentos repetidos sin motivo", dup.length === 0, dup.length ? `${new Set(dup).size} documento(s) incluido(s) más de una vez` : "");
@@ -404,13 +636,13 @@ async function generate(session, progress = () => {}) {
       entry.estadisticas = { documentos: built.log.length, ...built.stats };
       const docxPath = path.join(outDir, `${base}.docx`);
       fs.writeFileSync(docxPath, built.buffer, { mode: 0o600 });
-      zip.file(`${base}.docx`, built.buffer, { compression: "STORE" });
+      zip.file(`${base}.docx`, built.buffer, { compression: "STORE", createFolders: false });
       if (pdfOk) {
         progress({ fase: "pdf", planning: planning.nombre, n: i, total: seleccion.length });
         const r = await toPdf(docxPath, outDir);
         if (r.ok) {
           const pdfBuf = fs.readFileSync(r.path);
-          zip.file(`${base}.pdf`, pdfBuf, { compression: "DEFLATE" });
+          zip.file(`${base}.pdf`, pdfBuf, { compression: "DEFLATE", createFolders: false });
           entry.pdf = `${base}.pdf`;
           try {
             entry.paginas = (await PDFDocument.load(pdfBuf, { ignoreEncryption: true })).getPageCount();

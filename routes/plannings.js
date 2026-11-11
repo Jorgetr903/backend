@@ -169,7 +169,7 @@ router.patch(
         if ("nivel" in v) d.nivel = v.nivel ? String(v.nivel).slice(0, 40) : null;
         if ("dia" in v) d.dia = v.dia ? String(v.dia).toUpperCase().slice(0, 4) : null;
         if ("noche" in v) d.noche = v.noche == null ? null : !!v.noche;
-        if (typeof v.rol === "string" && d.categoria === "general" && ["principal", "turnos", "contactos", "tabla", "documento"].includes(v.rol)) d.rol = v.rol;
+        if (typeof v.rol === "string" && d.categoria === "general" && ["principal", "turnos", "contactos", "grupos_nivel", "grupos_trabajo", "servicio", "tabla", "documento"].includes(v.rol)) d.rol = v.rol;
         if (typeof v.categoria === "string" && CATEGORIAS.some((c) => c.id === v.categoria)) {
           d.categoria = v.categoria;
           d.destinos = null;

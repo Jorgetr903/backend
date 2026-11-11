@@ -55,6 +55,7 @@ function run(text, opts = {}) {
   if (opts.caps) rpr.push("<w:caps/>");
   if (opts.color) rpr.push(`<w:color w:val="${esc(opts.color)}"/>`);
   if (opts.size) rpr.push(`<w:sz w:val="${Math.round(opts.size * 2)}"/><w:szCs w:val="${Math.round(opts.size * 2)}"/>`);
+  if (opts.underline) rpr.push('<w:u w:val="single"/>');
   const props = rpr.length ? `<w:rPr>${rpr.join("")}</w:rPr>` : "";
   // soporta saltos de línea dentro del texto
   const parts = String(text == null ? "" : text).split(/\r?\n/);
@@ -71,10 +72,14 @@ function para(content, opts = {}) {
   if (opts.keepNext) ppr.push("<w:keepNext/>");
   if (opts.pageBreakBefore) ppr.push("<w:pageBreakBefore/>");
   if (opts.tabs) ppr.push(`<w:tabs>${opts.tabs}</w:tabs>`);
-  if (opts.before != null || opts.after != null || opts.line != null) {
+  if (opts.before != null || opts.after != null || opts.line != null || opts.lineExact != null) {
     ppr.push(
       `<w:spacing w:before="${opts.before || 0}" w:after="${opts.after || 0}"${
-        opts.line != null ? ` w:line="${opts.line}" w:lineRule="auto"` : ""
+        opts.lineExact != null
+          ? ` w:line="${opts.lineExact}" w:lineRule="exact"`
+          : opts.line != null
+          ? ` w:line="${opts.line}" w:lineRule="auto"`
+          : ""
       }/>`
     );
   }
@@ -123,10 +128,11 @@ function table(rows, widths, opts = {}) {
         .map((b) => `<w:${b} w:val="single" w:sz="${bsz}" w:space="0" w:color="${bcol}"/>`)
         .join("")}</w:tblBorders>`;
   const mar = opts.cellMargin != null ? opts.cellMargin : 40;
+  const marx = opts.cellMarginX != null ? opts.cellMarginX : mar + 40;
   return (
     `<w:tbl><w:tblPr><w:tblW w:w="${total}" w:type="dxa"/>${borders}<w:tblLayout w:type="fixed"/>` +
-    `<w:tblCellMar><w:top w:w="${mar}" w:type="dxa"/><w:left w:w="${mar + 40}" w:type="dxa"/>` +
-    `<w:bottom w:w="${mar}" w:type="dxa"/><w:right w:w="${mar + 40}" w:type="dxa"/></w:tblCellMar></w:tblPr>` +
+    `<w:tblCellMar><w:top w:w="${mar}" w:type="dxa"/><w:left w:w="${marx}" w:type="dxa"/>` +
+    `<w:bottom w:w="${mar}" w:type="dxa"/><w:right w:w="${marx}" w:type="dxa"/></w:tblCellMar></w:tblPr>` +
     `<w:tblGrid>${widths.map((w) => `<w:gridCol w:w="${Math.round(w)}"/>`).join("")}</w:tblGrid>` +
     rows.join("") +
     "</w:tbl>"

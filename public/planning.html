@@ -83,6 +83,8 @@
         <div><label for="anio">Año</label><input type="number" id="anio" min="2000" max="2100" /></div>
         <div><label for="niveles">Niveles (separados por comas)</label><input type="text" id="niveles" value="Pequeños, Medianos, Mayores" /></div>
       </div>
+      <label for="tema">Tema del año <span class="ayuda">(sale arriba a la derecha en todas las páginas; p. ej. «Rumbo a la Eternidad»)</span></label>
+      <input type="text" id="tema" />
       <label for="lema">Lema de la portada <span class="ayuda">(vacío = el de siempre)</span></label>
       <input type="text" id="lema" />
       <label for="enfermera">Nombre de la enfermera <span class="ayuda">(vacío = se deja el texto del año anterior)</span></label>
@@ -99,7 +101,7 @@
       <div class="card">
         <h2><span class="paso">2</span>Documentos</h2>
         <div class="drop">
-          <input type="file" id="archivosAuto" multiple accept=".docx,.xlsx,.pdf,.zip" style="display:none" />
+          <input type="file" id="archivosAuto" multiple accept=".docx,.xlsx,.pdf,.png,.jpg,.jpeg,.zip" style="display:none" />
           <button class="btn verde" id="btnAuto" type="button">Elegir archivos o un .zip</button>
           <p class="ayuda">Puedes soltar aquí todo junto (también un .zip). Se clasifica por el nombre: los Excel van a «Información general», lo que se llame «Oración…» a Oraciones, «Alergias/Menú/Dinámicas…» a su categoría y el resto a Actividades. Después puedes mover cualquier archivo.</p>
         </div>
@@ -197,7 +199,7 @@
   // ── Sesión ──
   $("btnCrear").onclick = function () {
     var niveles = $("niveles").value.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
-    api("POST", "/sesiones", { anio: +$("anio").value, niveles: niveles, lema: $("lema").value, enfermera: $("enfermera").value })
+    api("POST", "/sesiones", { anio: +$("anio").value, niveles: niveles, lema: $("lema").value, tema: $("tema").value, enfermera: $("enfermera").value })
       .then(function (r) { sesionId = r.id; ssSet(SES_STORAGE, sesionId); return refrescar(); })
       .catch(function (e) { alert(e.message); });
   };
@@ -258,7 +260,7 @@
     var nombres = {}; rev.categorias.forEach(function (c) { nombres[c.id] = c.nombre; });
     rev.categorias.forEach(function (c) {
       var docs = rev.documentos.filter(function (d) { return d.categoria === c.id; });
-      var inp = el("input", { type: "file", multiple: "multiple", accept: ".docx,.xlsx,.pdf,.zip", style: "display:none" });
+      var inp = el("input", { type: "file", multiple: "multiple", accept: ".docx,.xlsx,.pdf,.png,.jpg,.jpeg,.zip", style: "display:none" });
       inp.onchange = function () { subir(c.id, inp.files); };
       var cab = el("div", { class: "cat-cab" }, [
         el("div", {}, [el("span", { class: "cat-nombre", text: c.nombre + " " }), chip(c.estado), el("div", { class: "cat-ayuda", text: c.motivo || c.ayuda })]),
@@ -279,7 +281,7 @@
     if (d.aviso) f.appendChild(el("span", { class: "ayuda", text: d.aviso }));
     if (d.categoria === "general") {
       var sel = el("select", { onchange: function () { var o = {}; o[d.id] = { rol: sel.value }; parchear({ docs: o }); } });
-      [["principal", "Tabla principal"], ["turnos", "Tabla de turnos"], ["contactos", "Contactos (portada)"], ["tabla", "Otra tabla"], ["documento", "Documento"]].forEach(function (p) {
+      [["principal", "Tabla principal"], ["turnos", "Tabla de turnos"], ["contactos", "Contactos de monitores (portada)"], ["grupos_nivel", "Grupos de nivel (tiendas, niños y alergias)"], ["grupos_trabajo", "Grupos de trabajo"], ["servicio", "Servicio del comedor por grupo"], ["tabla", "Otra tabla"], ["documento", "Documento"]].forEach(function (p) {
         var op = el("option", { value: p[0], text: p[1] }); if (d.rol === p[0]) op.selected = true; sel.appendChild(op);
       });
       f.appendChild(sel);

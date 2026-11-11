@@ -13,7 +13,8 @@ const { norm } = require("./textutil");
 // ───────────────────────── Catálogo ─────────────────────────
 
 const CATEGORIAS = [
-  { id: "general", nombre: "Información general", ayuda: "Tabla principal, tabla de turnos, contactos de monitores, servicio extra, teléfonos" },
+  { id: "general", nombre: "Información general", ayuda: "Tabla principal, turnos, contactos de monitores, grupos de nivel y de trabajo, servicio de comedor, servicio extra, teléfonos" },
+  { id: "logo", nombre: "Logo del año", ayuda: "Imagen PNG o JPG con el logo de este año: sale en el índice y en «Teléfonos de interés»" },
   { id: "actividades", nombre: "Actividades generales", ayuda: "Un Word por actividad" },
   { id: "oraciones", nombre: "Oraciones", ayuda: "Un Word por oración; el nombre indica el día y si es de día o de noche" },
   { id: "dinamicas", nombre: "Dinámicas por nivel", ayuda: "Un Word por nivel" },
@@ -69,10 +70,20 @@ async function parsedTurnos(doc) {
   return doc._tu;
 }
 
-/** Rol de un Excel de "información general" */
+/** Rol de un documento de información general deducido del nombre (si el nombre es claro) */
+function roleByName(doc) {
+  const n = norm(doc.nombre);
+  if (/\bcontactos?\b|telefonos? (de )?(los )?monitores|\bmonitores\b/.test(n)) return "contactos";
+  if (/grupos? (de )?trabajo/.test(n)) return "grupos_trabajo";
+  if (/grupos? (de )?nivel|\btiendas?\b|\bpequenos\b|\bmedianos\b|\bmayores\b/.test(n)) return "grupos_nivel";
+  if (doc.ext === ".xlsx" && /servicios?|comedor|fregado|distribucion/.test(n)) return "servicio";
+  return null;
+}
+
+/** Rol de un documento de "información general" */
 async function detectGeneralRole(doc) {
   if (doc.rol) return doc.rol;
-  if (doc.ext !== ".xlsx") return "documento";
+  if (doc.ext !== ".xlsx") return roleByName(doc) || "documento";
   try {
     const tt = await parsedTimetable(doc);
     if (tt.days.filter((d) => d.kind === "dia").length >= 2) return "principal";
@@ -81,8 +92,7 @@ async function detectGeneralRole(doc) {
     const tu = await parsedTurnos(doc);
     if (tu.monitors.length >= 2 && tu.days.length >= 2) return "turnos";
   } catch (_) {}
-  if (/contact|monitor/.test(norm(doc.nombre))) return "contactos";
-  return "tabla";
+  return roleByName(doc) || "tabla";
 }
 
 // ───────────────────────── Análisis ─────────────────────────
@@ -112,6 +122,8 @@ async function analyze(session) {
   if (!principal.length) inc("critica", "falta_principal", "Falta la tabla principal del campamento (Excel con los días y el horario).", { categoria: "general" });
   if (principal.length > 1) inc("critica", "varias_principal", "Hay más de una tabla principal; marca cuál sobra como 'excluir'.", { categoria: "general" });
   if (!turnosDocs.length) inc("critica", "falta_turnos", "Falta la tabla de turnos (Excel con los monitores y sus tareas por día).", { categoria: "general" });
+  const contactosDocs = general.filter((d) => d.rolDetectado === "contactos" && !d.excluir);
+  if (!contactosDocs.length) inc("critica", "falta_contactos", "Falta la tabla con los nombres, correos y teléfonos de todos los monitores (va en la portada, antes del índice).", { categoria: "general" });
   if (turnosDocs.length > 1) inc("critica", "varias_turnos", "Hay más de una tabla de turnos; marca cuál sobra como 'excluir'.", { categoria: "general" });
 
   let tt = null;
@@ -419,7 +431,7 @@ async function analyze(session) {
       destinos: d.destinosEfectivos,
       nivel: d.nivelDetectado || undefined,
       excluir: !!d.excluir,
-      aviso: d.info && d.info.ok && d.info.landscape ? "Tiene páginas horizontales; se pasarán a vertical" : undefined,
+      aviso: d.info && d.info.ok && d.info.landscape ? "Tiene páginas horizontales; se conservarán tal cual" : undefined,
     })),
     dias: dias.map((d) => ({
       label: d.label,
@@ -449,7 +461,7 @@ async function analyze(session) {
     avisos: incUnicas.length - criticas.length,
   };
 
-  return { review, model: { dias, plannings, seleccionados, tt, tu, actDocs, oraDocs, dinDocs, docsAll, principal: principal[0], turnos: turnosDocs[0], incidencias: incUnicas } };
+  return { review, model: { anio: cfg.anio, hayContactos: contactosDocs.length > 0, dias, plannings, seleccionados, tt, tu, actDocs, oraDocs, dinDocs, docsAll, principal: principal[0], turnos: turnosDocs[0], incidencias: incUnicas } };
 }
 
 module.exports = { analyze, CATEGORIAS, listPlannings, DESTINOS_DEFECTO, NIVELES_DEFECTO, slug };

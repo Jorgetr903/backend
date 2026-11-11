@@ -8,7 +8,7 @@
 //   - si no se puede relacionar con seguridad la tarea con el horario,
 //     queda pendiente de revisión (nunca se elige "por intuición").
 
-const { loadWorkbook, cellLines, dayToken } = require("./xlsxReader");
+const { loadWorkbook, cellLines, dayToken, colorOf } = require("./xlsxReader");
 const { norm, tokens, ratio } = require("./textutil");
 
 const ALIASES = [
@@ -62,7 +62,10 @@ async function parseTurnos(buffer) {
       .trim();
     let hasTask = false;
     const cells = {};
+    const fills = {};
     for (const col of cols) {
+      const fl = colorOf(ws.getCell(r, col.c).fill);
+      if (fl) fills[col.label] = fl;
       const lines = cellLines(ws.getCell(r, col.c));
       if (lines.length) {
         hasTask = true;
@@ -79,7 +82,7 @@ async function parseTurnos(buffer) {
       warnings.push(`Hay turnos en la fila ${r} sin nombre de monitor; se ignoran.`);
       continue;
     }
-    monitors.push({ name, cells });
+    monitors.push({ name, cells, fills, fill: colorOf(ws.getCell(r, nameCol).fill) });
   }
   // nombres repetidos
   const seen = new Map();

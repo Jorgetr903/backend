@@ -82,6 +82,8 @@ function mimeFor(ext) {
   );
 }
 
+const NOFOLDERS = { createFolders: false };
+
 class PlanningBuilder {
   /**
    * @param {object} opts {year, lema}
@@ -89,6 +91,7 @@ class PlanningBuilder {
   constructor(opts = {}) {
     this.year = opts.year || "";
     this.lema = opts.lema || "";
+    this.tema = opts.tema || ""; // tema del año (p. ej. «Rumbo a la Eternidad»), va en la cabecera
     this.chunks = []; // XML de cuerpo, en orden
     this.styles = []; // XML de estilos copiados
     this.abstractNums = [];
@@ -113,18 +116,57 @@ class PlanningBuilder {
 
   // ───────────────────────── Secciones ─────────────────────────
 
-  /** sectPr estándar: vertical, cabecera y pie del planning */
-  sectPrXml({ type = "nextPage", margins, cols } = {}) {
-    const m = margins || { top: 1134, right: 1134, bottom: 1134, left: 1134, header: 567, footer: 567 };
+  /**
+   * sectPr estándar del planning. Márgenes y tamaños como en el planning de
+   * referencia: vertical (1417/850) o apaisado para tablas (283/425).
+   */
+  sectPrXml({ type = "nextPage", margins, cols, landscape = false } = {}) {
+    const m =
+      margins ||
+      (landscape
+        ? { top: 960, right: 425, bottom: 1200, left: 283, header: 511, footer: 960 }
+        : { top: 1360, right: 850, bottom: 1200, left: 1417, header: 511, footer: 960 });
+    const w = landscape ? PAGE.h : PAGE.w;
+    const h = landscape ? PAGE.w : PAGE.h;
     return (
       `<w:sectPr>` +
       `<w:headerReference w:type="default" r:id="rIdPlHdr"/>` +
       `<w:footerReference w:type="default" r:id="rIdPlFtr"/>` +
       (type ? `<w:type w:val="${type}"/>` : "") +
-      `<w:pgSz w:w="${PAGE.w}" w:h="${PAGE.h}"/>` +
-      `<w:pgMar w:top="${m.top}" w:right="${m.right}" w:bottom="${m.bottom}" w:left="${m.left}" w:header="${m.header || 567}" w:footer="${m.footer || 567}" w:gutter="0"/>` +
+      `<w:pgSz w:w="${w}" w:h="${h}"${landscape ? ' w:orient="landscape"' : ""}/>` +
+      `<w:pgMar w:top="${m.top}" w:right="${m.right}" w:bottom="${m.bottom}" w:left="${m.left}" w:header="${m.header}" w:footer="${m.footer}" w:gutter="0"/>` +
       (cols || "") +
       `</w:sectPr>`
+    );
+  }
+
+  /** Ancho útil (twips) de una sección generada */
+  textWidth({ landscape = false, margins } = {}) {
+    const m = margins || (landscape ? { left: 283, right: 425 } : { left: 1417, right: 850 });
+    return (landscape ? PAGE.h : PAGE.w) - m.left - m.right;
+  }
+
+  /** Registra una imagen para usarla en XML generado; devuelve su rId */
+  registerImage(buffer, ext = "png") {
+    const name = `gen${++this.counters.media}.${ext.replace(/^\./, "").toLowerCase()}`;
+    this.media.set(name, buffer);
+    const rid = `rIdGen${this.counters.rel++}`;
+    this.extraRels.push(`<Relationship Id="${rid}" Type="${REL_TYPE}/image" Target="media/${name}"/>`);
+    return rid;
+  }
+
+  /** <w:drawing> en línea con una imagen ya registrada (cx, cy en EMU) */
+  imageXml(rid, cx, cy, descr = "Logo") {
+    const id = this.counters.docPr++;
+    return (
+      `<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${cx}" cy="${cy}"/>` +
+      `<wp:docPr id="${id}" name="Imagen ${id}" descr="${descr}"/>` +
+      `<wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1"/></wp:cNvGraphicFramePr>` +
+      `<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic>` +
+      `<pic:nvPicPr><pic:cNvPr id="${id}" name="Imagen ${id}"/><pic:cNvPicPr/></pic:nvPicPr>` +
+      `<pic:blipFill><a:blip r:embed="${rid}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>` +
+      `<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>` +
+      `</pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>`
     );
   }
 
@@ -134,7 +176,7 @@ class PlanningBuilder {
    * @param {string} xml  uno o varios <w:p>/<w:tbl>
    */
   addGenerated(xml, sectOpts = {}) {
-    this.chunks.push(xml + para("", { sectPr: this.sectPrXml(sectOpts), after: 0 }));
+    this.chunks.push(xml + para("", { sectPr: this.sectPrXml(sectOpts), after: 0, lineExact: 20 }));
   }
 
   // ─────────────────── Incorporar un DOCX completo ───────────────────
@@ -149,12 +191,17 @@ class PlanningBuilder {
     const docFile = zip.file("word/document.xml");
     if (!docFile) throw new Error("El archivo no es un documento Word válido (falta word/document.xml)");
 
-    const [docXml, relsXml, stylesXml, numXml] = await Promise.all([
-      docFile.async("string"),
-      zip.file("word/_rels/document.xml.rels") ? zip.file("word/_rels/document.xml.rels").async("string") : "",
-      zip.file("word/styles.xml") ? zip.file("word/styles.xml").async("string") : "",
-      zip.file("word/numbering.xml") ? zip.file("word/numbering.xml").async("string") : "",
-    ]);
+    // Algunos exportadores (Google Docs) escriben medidas con decimales (w:hanging="359.00000000000006"),
+    // que Word no admite en estos atributos: se redondean a enteros.
+    const redondea = (s) => s.replace(/(\sw:[A-Za-z]+=")(-?\d+\.\d+)(")/g, (m, a, v, c) => a + Math.round(parseFloat(v)) + c);
+    const [docXml, relsXml, stylesXml, numXml] = (
+      await Promise.all([
+        docFile.async("string"),
+        zip.file("word/_rels/document.xml.rels") ? zip.file("word/_rels/document.xml.rels").async("string") : "",
+        zip.file("word/styles.xml") ? zip.file("word/styles.xml").async("string") : "",
+        zip.file("word/numbering.xml") ? zip.file("word/numbering.xml").async("string") : "",
+      ])
+    ).map((s, i) => (i === 1 ? s : redondea(s)));
 
     const doc = parseXml(docXml);
     const root = doc.documentElement;
@@ -506,6 +553,26 @@ class PlanningBuilder {
     s.setAttributeNS(W, "w:name", bm.name);
     const e = doc.createElementNS(W, "w:bookmarkEnd");
     e.setAttributeNS(W, "w:id", String(bm.id));
+    // Documento de un solo párrafo (p. ej. una página con una imagen): el párrafo lleva también
+    // el cambio de sección y algunos visores contarían el marcador en la página anterior;
+    // se usa un párrafo de ancla propio, casi invisible.
+    const bloques = [];
+    for (let c = body.firstChild; c; c = c.nextSibling) if (c.nodeType === 1 && c.localName !== "sectPr") bloques.push(c);
+    if (bloques.length === 1) {
+      const a = doc.createElementNS(W, "w:p");
+      const apr = doc.createElementNS(W, "w:pPr");
+      const sp = doc.createElementNS(W, "w:spacing");
+      sp.setAttributeNS(W, "w:before", "0");
+      sp.setAttributeNS(W, "w:after", "0");
+      sp.setAttributeNS(W, "w:line", "20");
+      sp.setAttributeNS(W, "w:lineRule", "exact");
+      apr.appendChild(sp);
+      a.appendChild(apr);
+      a.appendChild(s);
+      a.appendChild(e);
+      body.insertBefore(a, p);
+      return;
+    }
     const ppr = firstChild(p, "pPr");
     const ref = ppr ? ppr.nextSibling : p.firstChild;
     p.insertBefore(s, ref);
@@ -561,18 +628,14 @@ class PlanningBuilder {
       let oh = pgSz ? parseInt(pgSz.getAttributeNS(W, "h") || "16838", 10) : 16838;
       const orient = pgSz ? pgSz.getAttributeNS(W, "orient") : "";
       const wasLandscape = orient === "landscape" || ow > oh;
-      let nw = ow;
-      let nh = oh;
-      if (wasLandscape) {
-        nw = Math.min(ow, oh);
-        nh = Math.max(ow, oh);
-        this.stats.sectionsForcedPortrait++;
-      }
+      // Se respeta el tamaño, la orientación y los márgenes del documento original
+      const nw = ow;
+      const nh = oh;
       const num = (n, d) => {
         const v = pgMar ? parseInt(pgMar.getAttributeNS(W, n) || "", 10) : NaN;
         return Number.isFinite(v) ? v : d;
       };
-      let m = {
+      const m = {
         top: num("top", 1134),
         right: num("right", 1134),
         bottom: num("bottom", 1134),
@@ -580,23 +643,19 @@ class PlanningBuilder {
         header: num("header", 567),
         footer: num("footer", 567),
       };
-      // Márgenes razonables (las secciones apaisadas traen márgenes estrechos)
-      m.top = Math.max(m.top, 850);
-      m.bottom = Math.max(m.bottom, 850);
-      m.left = Math.max(m.left, 566);
-      m.right = Math.max(m.right, 566);
-      // Documentos con márgenes enormes (p. ej. 2409) dejarían la tabla sin sitio
-      if (nw - m.left - m.right < 7000) {
+      // Solo si el margen deja una columna imposible de leer se avisa y se corrige
+      if (nw - m.left - m.right < 4000) {
+        this.warn("Un documento tenía unos márgenes que dejaban casi sin espacio útil; se han reducido.");
         m.left = Math.min(m.left, 1000);
         m.right = Math.min(m.right, 1000);
       }
       const textW = nw - m.left - m.right;
       const colsEl = old ? firstChild(old, "cols") : null;
-      const cols = colsEl && wasLandscape ? "" : colsEl ? ser(colsEl) : "";
+      const cols = colsEl ? ser(colsEl) : "";
 
       // Tipo de sección: la primera sección del documento arranca en página nueva
       let type = idx === 0 ? "nextPage" : wval(old ? firstChild(old, "type") : null) || "nextPage";
-      const sectXml = this._sectXml({ w: nw, h: nh, m, type, cols });
+      const sectXml = this._sectXml({ w: nw, h: nh, m, type, cols, landscape: wasLandscape });
 
       // Sustituir el sectPr
       const newSect = parseXml(
@@ -614,7 +673,7 @@ class PlanningBuilder {
         ppr.appendChild(imported);
       }
 
-      this._fitToWidth(g.elements, textW, wasLandscape ? ow - (pgMar ? num("left", 0) + num("right", 0) : 0) : null);
+      this._fitToWidth(g.elements, textW, null);
     });
     if (finalSect && finalSect.parentNode) removeNode(finalSect);
   }
@@ -629,13 +688,13 @@ class PlanningBuilder {
     return ppr;
   }
 
-  _sectXml({ w, h, m, type, cols }) {
+  _sectXml({ w, h, m, type, cols, landscape }) {
     return (
       `<w:sectPr>` +
       `<w:headerReference w:type="default" r:id="rIdPlHdr"/>` +
       `<w:footerReference w:type="default" r:id="rIdPlFtr"/>` +
       `<w:type w:val="${type}"/>` +
-      `<w:pgSz w:w="${w}" w:h="${h}"/>` +
+      `<w:pgSz w:w="${w}" w:h="${h}"${landscape ? ' w:orient="landscape"' : ''}/>` +
       `<w:pgMar w:top="${m.top}" w:right="${m.right}" w:bottom="${m.bottom}" w:left="${m.left}" w:header="${m.header}" w:footer="${m.footer}" w:gutter="0"/>` +
       cols +
       `</w:sectPr>`
@@ -726,23 +785,30 @@ class PlanningBuilder {
   // ───────────────────────── Empaquetado ─────────────────────────
 
   _headerXml() {
+    // Texto a izquierda y derecha como en el planning de referencia
+    // (Calibri 10). Una tabla al 100 % se adapta a cualquier ancho de página.
     const left = `CSP ${this.year}`.trim();
-    const right = this.lema || "";
-    const tabs = `<w:tab w:val="right" w:pos="${PAGE.w - 2268}"/>`;
-    const inner =
-      run(left, { size: 9, color: "444444" }) + "<w:r><w:tab/></w:r>" + run(right, { size: 9, color: "444444" });
+    const right = this.tema || "";
+    const cellP = (txt, align) =>
+      `<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/><w:jc w:val="${align}"/></w:pPr>` +
+      run(txt, { size: 10, font: "Calibri" }) +
+      `</w:p>`;
+    const tc = (txt, align) => `<w:tc><w:tcPr><w:tcW w:w="2500" w:type="pct"/></w:tcPr>${cellP(txt, align)}</w:tc>`;
+    const tbl =
+      `<w:tbl><w:tblPr><w:tblW w:w="5000" w:type="pct"/><w:tblLayout w:type="fixed"/>` +
+      `<w:tblCellMar><w:left w:w="0" w:type="dxa"/><w:right w:w="0" w:type="dxa"/></w:tblCellMar></w:tblPr>` +
+      `<w:tblGrid><w:gridCol w:w="4000"/><w:gridCol w:w="4000"/></w:tblGrid><w:tr>${tc(left, "left")}${tc(right, "right")}</w:tr></w:tbl>`;
     return (
       `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-      `<w:hdr xmlns:w="${W}" xmlns:r="${R}">` +
-      para(inner, { tabs, after: 0 }) +
-      `</w:hdr>`
+      `<w:hdr xmlns:w="${W}" xmlns:r="${R}">${tbl}<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="120" w:lineRule="exact"/></w:pPr></w:p></w:hdr>`
     );
   }
 
   _footerXml() {
     const fld = (code) =>
-      `<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> ${code} </w:instrText></w:r>` +
-      `<w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>1</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r>`;
+      `<w:r><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:cs="Calibri"/><w:sz w:val="20"/></w:rPr><w:fldChar w:fldCharType="begin"/></w:r>` +
+      `<w:r><w:rPr><w:sz w:val="20"/></w:rPr><w:instrText xml:space="preserve"> ${code} </w:instrText></w:r>` +
+      `<w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:cs="Calibri"/><w:sz w:val="20"/></w:rPr><w:t>1</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r>`;
     return (
       `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
       `<w:ftr xmlns:w="${W}" xmlns:r="${R}">` +
@@ -757,10 +823,27 @@ class PlanningBuilder {
     const nsDecl = Object.entries(this.prefixes)
       .map(([p, u]) => `xmlns:${p}="${u}"`)
       .join(" ");
+    // La última sección del planning se declara al final del cuerpo (así no queda una
+    // página en blanco detrás): se toma el sectPr del último párrafo.
+    const chunks = [...this.chunks];
+    let finalSect = null;
+    if (chunks.length) {
+      const lastChunk = chunks[chunks.length - 1];
+      const i = lastChunk.lastIndexOf("<w:sectPr");
+      if (i >= 0) {
+        const j = lastChunk.indexOf("</w:sectPr>", i) + "</w:sectPr>".length;
+        const tail = lastChunk.slice(j);
+        const m = /^<\/w:pPr>((?:<w:r[ >][\s\S]*?<\/w:r>|<w:bookmark[^>]*\/>)*)<\/w:p>$/.exec(tail);
+        if (m) {
+          finalSect = lastChunk.slice(i, j);
+          chunks[chunks.length - 1] = lastChunk.slice(0, i) + tail;
+        }
+      }
+    }
     const documentXml =
       `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-      `<w:document ${nsDecl}><w:body>${this.chunks.join("")}` +
-      this.sectPrXml({ type: null }) +
+      `<w:document ${nsDecl}><w:body>${chunks.join("")}` +
+      (finalSect || this.sectPrXml({ type: null })) +
       `</w:body></w:document>`;
 
     const baseStyles =
@@ -768,13 +851,14 @@ class PlanningBuilder {
       `<w:style w:type="character" w:default="1" w:styleId="DefaultParagraphFont"><w:name w:val="Default Paragraph Font"/><w:uiPriority w:val="1"/><w:semiHidden/></w:style>` +
       `<w:style w:type="table" w:default="1" w:styleId="TableNormal"><w:name w:val="Normal Table"/><w:uiPriority w:val="99"/><w:semiHidden/>` +
       `<w:tblPr><w:tblInd w:w="0" w:type="dxa"/><w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="108" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="108" w:type="dxa"/></w:tblCellMar></w:tblPr></w:style>` +
-      `<w:style w:type="paragraph" w:styleId="PlTitulo"><w:name w:val="PlTitulo"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="120" w:after="200"/></w:pPr><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/><w:sz w:val="40"/><w:szCs w:val="40"/></w:rPr></w:style>` +
-      `<w:style w:type="paragraph" w:styleId="PlDia"><w:name w:val="PlDia"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="0" w:after="120"/></w:pPr><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/><w:b/><w:sz w:val="32"/><w:szCs w:val="32"/></w:rPr></w:style>` +
-      `<w:style w:type="paragraph" w:styleId="PlTexto"><w:name w:val="PlTexto"/><w:basedOn w:val="Normal"/><w:qFormat/><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial"/><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr></w:style>`;
+      `<w:style w:type="paragraph" w:styleId="PlTitulo"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:before="46"/><w:jc w:val="center"/></w:pPr><w:rPr><w:sz w:val="56"/><w:szCs w:val="56"/></w:rPr></w:style>` +
+      `<w:style w:type="paragraph" w:styleId="PlIndice"><w:name w:val="heading 2"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:jc w:val="center"/></w:pPr><w:rPr><w:sz w:val="48"/><w:szCs w:val="48"/></w:rPr></w:style>` +
+      `<w:style w:type="paragraph" w:styleId="PlDia"><w:name w:val="heading 3"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:jc w:val="center"/></w:pPr><w:rPr><w:sz w:val="44"/><w:szCs w:val="44"/><w:u w:val="single"/></w:rPr></w:style>` +
+      `<w:style w:type="paragraph" w:styleId="PlTexto"><w:name w:val="PlTexto"/><w:basedOn w:val="Normal"/><w:qFormat/></w:style>`;
 
     const stylesXml =
       `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-      `<w:styles xmlns:w="${W}"><w:docDefaults><w:rPrDefault><w:rPr/></w:rPrDefault><w:pPrDefault><w:pPr/></w:pPrDefault></w:docDefaults>` +
+      `<w:styles xmlns:w="${W}"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:eastAsia="Calibri" w:cs="Calibri"/><w:sz w:val="22"/><w:szCs w:val="22"/><w:lang w:val="es-ES"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:widowControl w:val="0"/></w:pPr></w:pPrDefault></w:docDefaults>` +
       baseStyles +
       this.styles.join("") +
       `</w:styles>`;
@@ -785,7 +869,7 @@ class PlanningBuilder {
 
     const settingsXml =
       `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-      `<w:settings xmlns:w="${W}"><w:updateFields w:val="true"/><w:defaultTabStop w:val="720"/><w:compat><w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="15"/></w:compat></w:settings>`;
+      `<w:settings xmlns:w="${W}"><w:defaultTabStop w:val="720"/><w:updateFields w:val="true"/><w:compat><w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="15"/></w:compat></w:settings>`;
 
     const exts = new Set(["rels", "xml"]);
     const defaults = [
@@ -820,20 +904,21 @@ class PlanningBuilder {
       this.extraRels.join("") +
       `</Relationships>`;
 
-    zip.file("[Content_Types].xml", ct);
+    zip.file("[Content_Types].xml", ct, NOFOLDERS);
     zip.file(
       "_rels/.rels",
-      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="${REL_NS}"><Relationship Id="rId1" Type="${REL_TYPE}/officeDocument" Target="word/document.xml"/></Relationships>`
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="${REL_NS}"><Relationship Id="rId1" Type="${REL_TYPE}/officeDocument" Target="word/document.xml"/></Relationships>`,
+      NOFOLDERS
     );
-    zip.file("word/document.xml", documentXml);
-    zip.file("word/_rels/document.xml.rels", docRels);
-    zip.file("word/styles.xml", stylesXml);
-    zip.file("word/numbering.xml", numberingXml);
-    zip.file("word/settings.xml", settingsXml);
-    zip.file("word/header1.xml", this._headerXml());
-    zip.file("word/footer1.xml", this._footerXml());
+    zip.file("word/document.xml", documentXml, NOFOLDERS);
+    zip.file("word/_rels/document.xml.rels", docRels, NOFOLDERS);
+    zip.file("word/styles.xml", stylesXml, NOFOLDERS);
+    zip.file("word/numbering.xml", numberingXml, NOFOLDERS);
+    zip.file("word/settings.xml", settingsXml, NOFOLDERS);
+    zip.file("word/header1.xml", this._headerXml(), NOFOLDERS);
+    zip.file("word/footer1.xml", this._footerXml(), NOFOLDERS);
     for (const [name, buf] of this.media) {
-      zip.file(`word/media/${name}`, buf, { compression: /\.(png|jpe?g|gif)$/i.test(name) ? "STORE" : "DEFLATE" });
+      zip.file(`word/media/${name}`, buf, { createFolders: false, compression: /\.(png|jpe?g|gif)$/i.test(name) ? "STORE" : "DEFLATE" });
     }
     return zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE", compressionOptions: { level: 6 } });
   }

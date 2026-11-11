@@ -23,7 +23,8 @@ const LIMITS = {
   maxSessions: 8,
   zipEntries: 400,
 };
-const EXT_OK = new Set([".docx", ".xlsx", ".pdf"]);
+const EXT_OK = new Set([".docx", ".xlsx", ".pdf", ".png", ".jpg", ".jpeg"]);
+const IMG_EXT = new Set([".png", ".jpg", ".jpeg"]);
 
 const sessions = new Map();
 
@@ -68,6 +69,7 @@ function sanitizeConfig(c) {
     plannings: Array.isArray(c.plannings) ? c.plannings.map(String) : [],
     lema: c.lema != null ? String(c.lema).slice(0, 200) : "",
     enfermera: c.enfermera != null ? String(c.enfermera).slice(0, 60) : "",
+    tema: c.tema != null ? String(c.tema).slice(0, 80) : "",
     bloques: c.bloques && typeof c.bloques === "object" ? c.bloques : {},
   };
 }
@@ -94,7 +96,11 @@ async function registerFile(s, { categoria, originalname, filePath, size }) {
   const ext = path.extname(filename).toLowerCase();
   if (!EXT_OK.has(ext)) {
     fs.rmSync(filePath, { force: true });
-    throw Object.assign(new Error(`"${filename}": solo se admiten archivos .docx, .xlsx y .pdf (o un .zip con ellos)`), { status: 400 });
+    throw Object.assign(new Error(`"${filename}": solo se admiten archivos .docx, .xlsx, .pdf, imágenes PNG/JPG para el logo (o un .zip con ellos)`), { status: 400 });
+  }
+  if (IMG_EXT.has(ext) !== (categoria === "logo")) {
+    fs.rmSync(filePath, { force: true });
+    throw Object.assign(new Error(IMG_EXT.has(ext) ? `"${filename}": las imágenes solo se admiten en la categoría «Logo del año»` : `"${filename}": en «Logo del año» solo se admite una imagen PNG o JPG`), { status: 400 });
   }
   if (s.docs.size >= LIMITS.maxFiles) {
     fs.rmSync(filePath, { force: true });
@@ -117,6 +123,15 @@ async function registerFile(s, { categoria, originalname, filePath, size }) {
     destinos: null,
     excluir: false,
   };
+  if (IMG_EXT.has(ext)) {
+    const head = (await fs.promises.readFile(filePath)).subarray(0, 4);
+    const png = head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47;
+    const jpg = head[0] === 0xff && head[1] === 0xd8;
+    if (!png && !jpg) {
+      fs.rmSync(filePath, { force: true });
+      throw Object.assign(new Error(`"${filename}" no es una imagen PNG o JPG válida`), { status: 400 });
+    }
+  }
   if (ext === ".docx") {
     doc.info = await readDocxInfo(await fs.promises.readFile(filePath));
     if (doc.info.ok && doc.info.title && doc.info.title.length <= 90) doc.titulo = doc.info.title;
