@@ -57,6 +57,11 @@
   .check-ok { color:var(--verde-o); } .check-fail { color:var(--rojo); font-weight:700; }
   ul.chk { margin:6px 0 0; padding-left:18px; font-size:12px; }
   .oculto { display:none !important; }
+  .biblioteca { margin-top:12px; padding:10px; border-radius:8px; background:#E3F2FD; border:1.5px solid #90CAF9; font-size:13px; }
+  .biblioteca.mal { background:#FFEBEE; border-color:var(--rojo); }
+  .enf { padding:8px 10px; border:1.5px solid var(--borde); border-radius:8px; margin-top:6px; font-size:13px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .lluvia { padding:9px 12px; border:1.5px dashed var(--borde); border-radius:10px; margin-top:8px; font-size:13px; color:var(--gris); }
+  .hoja { display:flex; gap:8px; flex-wrap:wrap; align-items:center; padding:4px 0 4px 14px; font-size:12px; }
   .paso { font-size:11px; background:var(--verde); color:#fff; border-radius:50%; width:20px; height:20px; display:inline-flex; align-items:center; justify-content:center; margin-right:6px; }
 </style>
 </head>
@@ -87,8 +92,8 @@
       <input type="text" id="tema" />
       <label for="lema">Lema de la portada <span class="ayuda">(vacío = el de siempre)</span></label>
       <input type="text" id="lema" />
-      <label for="enfermera">Nombre de la enfermera <span class="ayuda">(vacío = se deja el texto del año anterior)</span></label>
-      <input type="text" id="enfermera" />
+      <label for="enfermera">Enfermero/a(s) <span class="ayuda">(separados por comas; con el nombre se busca su grupo de nivel en la Base de Datos CSP y se genera un planning de enfermería por cada nivel distinto)</span></label>
+      <input type="text" id="enfermera" placeholder="Ana García, Luis Pérez" />
       <div class="fila" style="margin-top:14px">
         <button class="btn verde" id="btnCrear">Empezar</button>
         <button class="btn gris oculto" id="btnReiniciar">Empezar de cero (borra los archivos)</button>
@@ -105,6 +110,9 @@
           <button class="btn verde" id="btnAuto" type="button">Elegir archivos o un .zip</button>
           <p class="ayuda">Puedes soltar aquí todo junto (también un .zip). Se clasifica por el nombre: los Excel van a «Información general», lo que se llame «Oración…» a Oraciones, «Alergias/Menú/Dinámicas…» a su categoría y el resto a Actividades. Después puedes mover cualquier archivo.</p>
         </div>
+        <label for="claveExcel">Contraseña de la «Base de Datos CSP» <span class="ayuda">(solo si el Excel está protegido)</span></label>
+        <input type="password" id="claveExcel" autocomplete="off" placeholder="Se usa una sola vez para abrir el Excel y no se guarda" />
+        <div class="biblioteca" id="biblioteca"></div>
         <div id="categorias"></div>
         <div class="barra" id="barraSubida"><div></div></div>
         <div class="msg" id="msgSubida"></div>
@@ -115,15 +123,14 @@
         <div id="resumen"></div>
         <div id="incidencias"></div>
         <label style="display:flex;gap:6px;align-items:center;font-weight:400"><input type="checkbox" id="soloProblemas" /> Mostrar solo los días con problemas</label>
+        <div id="enfermeros"></div>
         <div id="dias"></div>
-        <div id="oraciones"></div>
       </div>
 
       <div class="card">
         <h2><span class="paso">4</span>Qué plannings generar</h2>
         <div id="plannings"></div>
-        <label>Bloques fijos que se incluyen en todos</label>
-        <div id="bloques"></div>
+        <p class="ayuda">Los bloques fijos (consejos y normas, primeros auxilios, montaje de altas, tabla de turnos, planning general…) se incluyen siempre en todos los plannings.</p>
       </div>
 
       <div class="card">
@@ -225,6 +232,7 @@
     if (!files || !files.length) return;
     var fd = new FormData();
     fd.append("categoria", categoria);
+    var pw = $("claveExcel").value; if (pw) fd.append("password", pw);
     for (var i = 0; i < files.length; i++) fd.append("archivos", files[i], files[i].name);
     $("barraSubida").style.display = "block"; msg("msgSubida", "", "");
     api("POST", "/sesiones/" + sesionId + "/documentos", fd, true)
@@ -234,6 +242,7 @@
   }
   function mostrarSubida(r) {
     var t = [];
+    if ((r.errores || []).some(function (x) { return /contrase/i.test(x); })) $("claveExcel").focus();
     if (r.anadidos && r.anadidos.length) t.push("Añadidos: " + r.anadidos.length);
     if (r.ignorados && r.ignorados.length) t.push("Ignorados (formato no válido): " + r.ignorados.join(", "));
     if (r.errores && r.errores.length) t.push(r.errores.join(" · "));
@@ -243,15 +252,13 @@
   $("archivosAuto").onchange = function (e) { subir("auto", e.target.files); e.target.value = ""; };
 
   // ── Pintado ──
-  var DESTINOS_CAT = ["dinamicas", "alergias", "menu", "enfermeria", "coordinacion", "direccion", "otros"];
-
   function render() {
     var haySesion = !!(estado && sesionId);
     $("sesion").classList.toggle("oculto", !haySesion);
     $("btnReiniciar").classList.toggle("oculto", !haySesion);
     $("cardInicio").classList.toggle("oculto", haySesion);
     if (!haySesion) return;
-    pintarCategorias(); pintarRevision(); pintarPlannings(); pintarGeneracion();
+    pintarBiblioteca(); pintarCategorias(); pintarRevision(); pintarPlannings(); pintarGeneracion();
   }
 
   function pintarCategorias() {
@@ -292,22 +299,20 @@
       rev.niveles.forEach(function (n) { var op = el("option", { value: n, text: n }); if (d.nivel === n) op.selected = true; sn.appendChild(op); });
       f.appendChild(sn);
     }
-    if (DESTINOS_CAT.indexOf(d.categoria) >= 0 && d.categoria !== "dinamicas") {
-      var dd = el("div", { class: "destinos" }, [el("span", { class: "ayuda", text: "Va a: " })]);
-      rev.plannings.forEach(function (p) {
-        var cb = el("input", { type: "checkbox" }); cb.checked = (d.destinos || []).indexOf(p.id) >= 0;
-        cb.onchange = function () {
-          var cur = (d.destinos || []).filter(function (x) { return x !== p.id; }); if (cb.checked) cur.push(p.id);
-          var o = {}; o[d.id] = { destinos: cur }; parchear({ docs: o });
-        };
-        dd.appendChild(el("label", {}, [cb, " " + p.nombre.replace("Planning ", "")]));
+    var hojasBox = null;
+    if (d.categoria === "base_datos" && d.hojas && d.hojas.length) {
+      hojasBox = el("div", { style: "flex:1 1 100%" }, [el("div", { class: "ayuda", text: "Hojas del Excel (qué contiene cada una):" })]);
+      d.hojas.forEach(function (h) {
+        var sr = el("select", { onchange: function () { var o = {}; o[d.id] = { hojas: {} }; o[d.id].hojas[h.nombre] = { rol: sr.value }; parchear({ docs: o }); } });
+        (rev.rolesHoja || []).forEach(function (r) { var op = el("option", { value: r.id, text: r.nombre }); if (h.rol === r.id) op.selected = true; sr.appendChild(op); });
+        hojasBox.appendChild(el("div", { class: "hoja" }, [el("span", { text: "«" + h.nombre + "»" }), sr, h.reconocida ? null : chip("sin reconocer", "dudosa")]));
       });
-      f.appendChild(dd);
     }
     var mover = el("select", { onchange: function () { if (!mover.value) return; var o = {}; o[d.id] = { categoria: mover.value }; parchear({ docs: o }); } });
     mover.appendChild(el("option", { value: "", text: "Mover a…" }));
     rev.categorias.forEach(function (c) { if (c.id !== d.categoria) mover.appendChild(el("option", { value: c.id, text: c.nombre })); });
     f.appendChild(mover);
+    if (hojasBox) f.appendChild(hojasBox);
     f.appendChild(el("button", { class: "btn mini rojo", text: "Quitar", onclick: function () {
       api("DELETE", "/sesiones/" + sesionId + "/documentos/" + d.id).then(refrescar).catch(function (e) { alert(e.message); });
     } }));
@@ -332,6 +337,10 @@
     var solo = $("soloProblemas").checked;
     var cd = $("dias"); cd.innerHTML = "";
     rev.dias.forEach(function (d) {
+      if (d.tipo === "lluvia") {
+        if (!solo) cd.appendChild(el("div", { class: "lluvia" }, [el("strong", { text: d.titulo + ": " }), "no lleva oraciones ni actividades con documento."]));
+        return;
+      }
       var malos = d.items.filter(function (i) { return itemMalo(i); }).length;
       if (solo && !malos) return;
       var det = el("details", { class: "dia " + (malos ? "mal" : "bien") });
@@ -343,26 +352,52 @@
       }
       cd.appendChild(det);
     });
-    var co = $("oraciones"); co.innerHTML = "";
-    if (rev.oraciones.length) {
-      co.appendChild(el("label", { text: "Oraciones detectadas (día y tipo, corregibles)" }));
-      rev.oraciones.forEach(function (o) {
-        var dia = el("input", { type: "text", value: o.dia || "", placeholder: "L27", style: "width:70px" });
-        var tipo = el("select", {}, [el("option", { value: "dia", text: "de día" }), el("option", { value: "noche", text: "de noche" })]);
-        tipo.value = o.tipo === "noche" ? "noche" : "dia";
-        var go = function () { var x = {}; x[o.docId] = { dia: dia.value || null, noche: tipo.value === "noche" }; parchear({ docs: x }); };
-        dia.onchange = go; tipo.onchange = go;
-        co.appendChild(el("div", { class: "doc" }, [el("div", { class: "n", text: o.nombre }), dia, tipo]));
-      });
-    }
+    pintarEnfermeros();
   }
   $("soloProblemas").onchange = function () { if (estado) pintarRevision(); };
+
+  function pintarEnfermeros() {
+    var rev = estado.revision, c = $("enfermeros"); c.innerHTML = "";
+    var lista = rev.enfermeros || [];
+    if (!lista.length) return;
+    c.appendChild(el("label", { text: "Enfermería: grupo de nivel de cada enfermero/a" }));
+    lista.forEach(function (n) {
+      var sel = el("select", { onchange: function () {
+        var m = {}; (estado.config.nivelEnfermeros ? Object.keys(estado.config.nivelEnfermeros) : []).forEach(function (k) { m[k] = estado.config.nivelEnfermeros[k]; });
+        if (sel.value) m[n.nombre] = sel.value; else delete m[n.nombre];
+        parchear({ config: { nivelEnfermeros: m } });
+      } });
+      sel.appendChild(el("option", { value: "", text: "(buscar en la Base de Datos)" }));
+      rev.niveles.forEach(function (v) { var op = el("option", { value: v, text: v }); if (estado.config.nivelEnfermeros && estado.config.nivelEnfermeros[n.nombre] === v) op.selected = true; sel.appendChild(op); });
+      c.appendChild(el("div", { class: "enf" }, [
+        el("strong", { text: n.nombre }),
+        chip(n.estado === "ok" ? (n.nivel || "ok") : "sin nivel", n.estado === "ok" ? "ok" : "PENDIENTE"),
+        n.estado === "ok" ? el("span", { class: "ayuda", text: n.via === "manual" ? "elegido a mano" : "encontrado en las tablas de grupos de nivel" }) : el("span", { class: "ayuda", text: n.motivo || "" }),
+        el("span", { class: "ayuda", text: "Nivel:" }), sel
+      ]));
+    });
+  }
+  function pintarBiblioteca() {
+    var bd = estado.revision.bd || {}, c = $("biblioteca");
+    var cuenta = function (o) { return Object.keys(o || {}).sort().reverse().map(function (a) { return o[a] + " de " + a; }).join(", ") || "ninguna"; };
+    c.className = "biblioteca" + (bd.error ? " mal" : "");
+    c.innerHTML = "";
+    if (bd.error) c.appendChild(el("div", { text: "No se ha podido leer la biblioteca de la app: " + bd.error }));
+    else {
+      c.appendChild(el("div", {}, [el("strong", { text: "Biblioteca de la app (se usa automáticamente): " })]));
+      c.appendChild(el("div", { text: "Actividades: " + cuenta(bd.actividades) + " · Dinámicas: " + cuenta(bd.dinamicas) }));
+      c.appendChild(el("div", { class: "ayuda", text: "Primero se buscan las actividades del año del campamento y, si no están, las de otros años. Solo tienes que subir lo que falte." }));
+    }
+    c.appendChild(el("button", { class: "btn mini", style: "margin-top:6px", text: "Volver a leer la biblioteca", onclick: function () {
+      api("POST", "/sesiones/" + sesionId + "/biblioteca/actualizar").then(function (e) { estado = e; render(); }).catch(function (e) { alert(e.message); });
+    } }));
+  }
 
   function itemMalo(i) {
     var cf = i.documento && i.documento.confianza;
     var docMalo = ["actividad", "especial", "oracion_dia", "oracion_noche"].indexOf(i.tipo) >= 0 && (!i.documentoIds || !i.documentoIds.length) && ["sin_documento", "no_necesita", "manual"].indexOf(cf) < 0 && !i.repetido;
     var rMalo = i.responsables && i.responsables.estado !== "ok";
-    return docMalo || rMalo;
+    return !!(docMalo || rMalo);
   }
 
   function filaItem(i, actDocs, oraDocs) {
@@ -382,6 +417,11 @@
       } });
       sel.appendChild(el("option", { value: "__auto", text: i.repetido ? "(se desarrolla el día " + i.primerDia + ")" : (i.documentos && i.documentos.length ? i.documentos.join(" + ") : "— elegir documento —") }));
       lista.forEach(function (d) { sel.appendChild(el("option", { value: d.id, text: d.nombre })); });
+      if (i.tipo.indexOf("oracion") !== 0 && (estado.revision.bdActividades || []).length) {
+        var og = el("optgroup", { label: "Biblioteca de la app" });
+        estado.revision.bdActividades.forEach(function (d) { og.appendChild(el("option", { value: d.id, text: d.nombre + (d.anio ? " (" + d.anio + ")" : "") })); });
+        sel.appendChild(og);
+      }
       sel.appendChild(el("option", { value: "__none", text: "— No necesita documento —" }));
       if (i.manual && i.documentoIds && i.documentoIds.length) sel.value = i.documentoIds[0];
       if (cf === "sin_documento") sel.value = "__none";
@@ -417,13 +457,7 @@
         var sel = rev.plannings.filter(function (x) { return x.id === p.id ? cb.checked : x.seleccionado; }).map(function (x) { return x.id; });
         parchear({ config: { plannings: sel } });
       };
-      cont.appendChild(el("div", { class: "doc" }, [cb, el("div", { class: "n", text: p.nombre }), p.tipo === "especial" ? el("span", { class: "ayuda", text: "Necesita: " + p.requiere.join(", ") }) : null]));
-    });
-    var cb2 = $("bloques"); cb2.innerHTML = "";
-    estado.bloques.forEach(function (b) {
-      var c = el("input", { type: "checkbox" }); c.checked = b.activo; c.disabled = !b.disponible;
-      c.onchange = function () { var o = {}; o[b.id] = c.checked; parchear({ config: { bloques: o } }); };
-      cb2.appendChild(el("div", { class: "doc" }, [c, el("div", { class: "n", text: b.titulo }), b.aviso ? el("span", { class: "ayuda", text: "⚠ " + b.aviso }) : null]));
+      cont.appendChild(el("div", { class: "doc" }, [cb, el("div", { class: "n", text: p.nombre }), p.tipo === "especial" ? el("span", { class: "ayuda", text: "Necesita: " + p.requiere.map(function (r) { var c = rev.categorias.filter(function (x) { return x.id === r; })[0]; return c ? c.nombre : r; }).join(", ") }) : null]));
     });
   }
 
@@ -432,14 +466,14 @@
     var rev = estado.revision, g = estado.generacion;
     var gen = g && g.estado === "generando";
     $("btnGenerar").disabled = !rev.puedeGenerar || gen;
-    $("btnGenerar").textContent = rev.puedeGenerar ? "Generar plannings" : "Resuelve " + rev.criticas + " problema(s) para poder generar";
+    $("btnGenerar").textContent = !rev.puedeGenerar ? "Elige al menos un planning" : "Generar plannings" + (rev.criticas ? " (quedan " + rev.criticas + " problema(s) por resolver)" : "");
     $("barraGen").style.display = gen ? "block" : "none";
     var inf = $("informe"); inf.innerHTML = "";
     $("btnDescargar").classList.toggle("oculto", !(g && g.estado === "listo"));
     $("btnBorrar").classList.toggle("oculto", !(g && g.estado === "listo"));
     if (gen) msg("msgGen", "ok", "Generando… " + (g.progreso && g.progreso.planning ? g.progreso.planning + " (" + g.progreso.fase + ")" : ""));
     else if (g && g.estado === "error") msg("msgGen", "error", g.error || "Ha fallado la generación");
-    else if (g && g.estado === "listo") msg("msgGen", g.informe.todoCorrecto ? "ok" : "error", g.informe.todoCorrecto ? "Todo generado y comprobado. Ya puedes descargar el ZIP." : "Generado, pero alguna comprobación ha fallado: revisa el informe.");
+    else if (g && g.estado === "listo") msg("msgGen", g.informe.todoCorrecto ? "ok" : "error", !g.informe.todoCorrecto ? "Generado, pero alguna comprobación ha fallado: revisa el informe." : g.informe.conPendientes ? "Generado. Había " + g.informe.conPendientes + " problema(s) sin resolver: lo que faltaba no está incluido (están listados al principio de INFORME.txt dentro del ZIP)." : "Todo generado y comprobado. Ya puedes descargar el ZIP.");
     else msg("msgGen", "", "");
     if (g && g.informe && g.informe.plannings) {
       if (g.informe.avisoPdf) inf.appendChild(el("p", { class: "ayuda", text: "ℹ " + g.informe.avisoPdf }));
@@ -452,9 +486,22 @@
       });
     }
   }
-  $("btnGenerar").onclick = function () {
-    api("POST", "/sesiones/" + sesionId + "/generar", {}).then(function () { vigilar(); }).catch(function (e) { alert(e.message); });
-  };
+  function lanzar(confirmar) {
+    var ids = estado.revision.plannings.filter(function (p) { return p.seleccionado; }).map(function (p) { return p.id; });
+    return api("POST", "/sesiones/" + sesionId + "/generar", { plannings: ids, confirmarProblemas: !!confirmar })
+      .then(function () { return refrescar(); })
+      .catch(function (e) {
+        if (e.status === 409 && e.data && e.data.requiereConfirmacion) {
+          var txt = e.data.mensaje + "\n\n" + (e.data.problemas || []).map(function (m) { return "• " + m; }).join("\n") +
+            (e.data.criticas > (e.data.problemas || []).length ? "\n… y " + (e.data.criticas - e.data.problemas.length) + " más" : "") +
+            "\n\n¿Generar los plannings de todas formas?";
+          if (confirm(txt)) return lanzar(true);
+          return null;
+        }
+        alert(e.message);
+      });
+  }
+  $("btnGenerar").onclick = function () { lanzar(false); };
   function vigilar() {
     clearTimeout(timerGen);
     timerGen = setTimeout(function () {

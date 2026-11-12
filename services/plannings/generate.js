@@ -6,15 +6,26 @@ const path = require("path");
 const os = require("os");
 const { spawn, spawnSync } = require("child_process");
 const JSZip = require("jszip");
+const yazl = require("yazl");
 const { PDFDocument } = require("pdf-lib");
 const { PlanningBuilder, parseXml } = require("./docxmerge");
 const { esc, run, para } = require("./ooxml");
 const R = require("./renderers");
 const { FONT_LIGHT } = R;
-const { analyze } = require("./analysis");
+const { analyze, paraPlanning } = require("./analysis");
 const { norm } = require("./textutil");
+const { imageSize } = require("./images");
+const { renderPdfToDir } = require("./pdfpages");
+const BD = require("./bd");
+const BDX = require("./basedatos");
+const { loadWorkbook } = require("./xlsxReader");
 
 const BASE_DIR = path.join(__dirname, "..", "..", "assets", "plannings", "base");
+
+// Márgenes de las páginas que son un PDF incrustado como imagen (más estrechos para que el PDF se vea lo más grande posible)
+const PAGE_W = 11906;
+const PAGE_H = 16838;
+const PDF_MARGINS = { top: 820, right: 567, bottom: 800, left: 567, header: 400, footer: 480 };
 
 const MOTTO_DEFECTO = "¡¡CAMPAMENTO SANTA PAULA, QUE ALEGRÍA QUE GOZADA Y QUE BIEN NOS LO VAMOS A PASAR, AUNQUE HAYA QUE CURRAR!!";
 
@@ -112,26 +123,6 @@ async function replaceInDocx(buffer, from, to) {
   return { buffer: await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }), found: true };
 }
 
-function imageSize(buf) {
-  // PNG
-  if (buf.length > 24 && buf.readUInt32BE(0) === 0x89504e47) return { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20), ext: "png" };
-  // JPEG
-  if (buf[0] === 0xff && buf[1] === 0xd8) {
-    let i = 2;
-    while (i + 9 < buf.length) {
-      if (buf[i] !== 0xff) {
-        i++;
-        continue;
-      }
-      const m = buf[i + 1];
-      if (m >= 0xc0 && m <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(m)) return { h: buf.readUInt16BE(i + 5), w: buf.readUInt16BE(i + 7), ext: "jpg" };
-      i += 2 + buf.readUInt16BE(i + 2);
-    }
-    return { w: 1, h: 1, ext: "jpg" };
-  }
-  return null;
-}
-
 /** Sustituye una imagen de un DOCX por otra (conserva el ancho y ajusta el alto a la nueva proporción) */
 async function replaceImageInDocx(buffer, mediaName, newBuf) {
   const info = imageSize(newBuf);
@@ -190,12 +181,16 @@ function indexXml(entries) {
 const normaliza = (s) => norm(s || "");
 
 /** ¿La hoja es de este planning? (los plannings por nivel solo llevan la hoja de su nivel) */
-function hojaDelPlanning(planning, niveles, todasLasHojas) {
+function hojaDelPlanning(planning, niveles, todasLasHojas, warn = () => {}) {
   if (planning.tipo !== "nivel") return () => true;
   const key = (n) => normaliza(n).replace(/\s+/g, "").slice(0, 5);
   const propia = key(planning.nivel);
   const algunaPorNivel = todasLasHojas.some((h) => niveles.some((n) => normaliza(h).replace(/\s+/g, "").includes(key(n))));
-  if (!algunaPorNivel) return () => true; // las hojas no están separadas por nivel
+  if (!algunaPorNivel) {
+    // las hojas no están separadas por nivel
+    if (todasLasHojas.length) warn("Las hojas de «grupos de nivel» no están separadas por nivel (no hay una hoja por nivel): este planning lleva todas las tiendas, con las alergias de los demás niveles. Separa las hojas por nivel si no quieres que se incluyan.");
+    return () => true;
+  }
   return (h) => normaliza(h).replace(/\s+/g, "").includes(propia);
 }
 
@@ -250,6 +245,23 @@ function lineasExtraDia(dm) {
   return extra;
 }
 
+// ───────────────────────── PDF → páginas (con caché por sesión) ─────────────────────────
+
+/** Páginas de un PDF (subido o de la biblioteca) como JPEG; se renderiza una sola vez por generación */
+async function pdfPagesOf(session, doc) {
+  const cache = session.pdfPages || (session.pdfPages = new Map());
+  if (!cache.has(doc.id)) {
+    cache.set(
+      doc.id,
+      (async () => {
+        const buf = doc.origen === "bd" ? await BD.fetchPdf(doc.bd) : await fs.promises.readFile(doc.path);
+        return renderPdfToDir(buf, path.join(session.dir, "pdfpages"), doc.id.replace(/[^a-z0-9]/gi, ""));
+      })()
+    );
+  }
+  return cache.get(doc.id);
+}
+
 // ───────────────────────── Un planning ─────────────────────────
 
 async function buildPlanning(session, model, planning, onWarn) {
@@ -266,7 +278,42 @@ async function buildPlanning(session, model, planning, onWarn) {
 
   const readDoc = (d) => fs.promises.readFile(d.path);
 
+  // Páginas de un PDF como imágenes, repartidas en secciones según su orientación
+  const addPdf = async (doc, { title, level = 2, type, day = null, special = null, noIndex = false }) => {
+    const bm = b.nextBookmark();
+    try {
+      const r = await pdfPagesOf(session, doc);
+      if (r.truncated) warn(`«${doc.nombre}» tiene ${r.total} páginas: se incluyen solo las primeras ${r.pages.length}.`);
+      const grupos = [];
+      for (const pg of r.pages) {
+        const last = grupos[grupos.length - 1];
+        if (last && last.landscape === pg.landscape) last.pages.push(pg);
+        else grupos.push({ landscape: pg.landscape, pages: [pg] });
+      }
+      let primero = true;
+      for (const g of grupos) {
+        const availW = (g.landscape ? PAGE_H : PAGE_W) - PDF_MARGINS.left - PDF_MARGINS.right;
+        const availH = (g.landscape ? PAGE_W : PAGE_H) - PDF_MARGINS.top - PDF_MARGINS.bottom - 200;
+        let xml = primero ? R.anchor(bm) : "";
+        g.pages.forEach((pg, i) => {
+          const k = Math.min((availW * 635) / pg.w, (availH * 635) / pg.h);
+          const rid = b.registerImage(fs.readFileSync(pg.file), "jpg");
+          xml += para(b.imageXml(rid, Math.round(pg.w * k), Math.round(pg.h * k), `${doc.nombre} (página ${i + 1})`), { align: "center", before: 0, after: 0, line: 240, pageBreakBefore: i > 0 });
+        });
+        b.addGenerated(xml, { landscape: g.landscape, margins: PDF_MARGINS });
+        primero = false;
+      }
+      if (!noIndex) entries.push({ title, level, bookmark: bm });
+      log.push({ type, day, docId: doc.id, categoria: doc.categoria, special, titulo: title, pdf: true, paginas: r.pages.length });
+      return true;
+    } catch (e) {
+      errores.push(`No se pudo incluir "${title}" (${doc.nombre}${doc.origen === "bd" ? ", de la biblioteca de la app" : ""}): ${e.message}`);
+      return false;
+    }
+  };
+
   const addDoc = async (doc, { title, level = 2, type, day = null, special = null, buffer = null, noIndex = false }) => {
+    if (doc && doc.ext === ".pdf") return addPdf(doc, { title, level, type, day, special, noIndex });
     const bm = b.nextBookmark();
     try {
       await b.addDocx(buffer || (await readDoc(doc)), { bookmark: bm });
@@ -285,12 +332,14 @@ async function buildPlanning(session, model, planning, onWarn) {
   let logoInfo = null;
   if (logoDoc) {
     try {
-      logoBuf = await readDoc(logoDoc);
+      // un logo SVG ya se convirtió a PNG al subirlo
+      logoBuf = await fs.promises.readFile(logoDoc.pngPath || logoDoc.path);
       logoInfo = imageSize(logoBuf);
       if (!logoInfo) {
         logoBuf = null;
-        warn(`No se reconoce el formato del logo "${logoDoc.nombre}" (usa PNG o JPG).`);
+        warn(`No se reconoce el formato del logo "${logoDoc.nombre}" (usa SVG, PNG o JPG).`);
       }
+      (logoDoc.avisos || []).forEach(warn);
     } catch (e) {
       warn(`No se pudo leer el logo del año: ${e.message}`);
     }
@@ -299,8 +348,9 @@ async function buildPlanning(session, model, planning, onWarn) {
   }
 
   // Documentos de información general por rol
-  const general = model.docsAll.filter((d) => d.categoria === "general" && !d.excluir);
-  const paraEste = (d) => (d.destinosEfectivos || ["todos"]).some((x) => x === "todos" || x === planning.id);
+  // (los documentos que parecen datos sensibles dentro de «Información general» no se incluyen: ver incidencias)
+  const general = model.docsAll.filter((d) => d.categoria === "general" && !d.excluir && !d.sensibleBloqueado);
+  const paraEste = (d) => paraPlanning(d.destinosEfectivos || ["todos"], planning);
   const generalDocx = general.filter((d) => d.ext === ".docx");
   const upServicio = generalDocx.find((d) => /servicio extra/.test(norm(d.nombre)));
   const upTelef = generalDocx.find((d) => /telefon/.test(norm(d.nombre)));
@@ -308,11 +358,17 @@ async function buildPlanning(session, model, planning, onWarn) {
   const contactos = general.filter((d) => d.rolDetectado === "contactos");
   const tablasExtra = general.filter((d) => d.rolDetectado === "tabla" && d.ext === ".xlsx" && paraEste(d));
   const otrosGeneral = generalDocx.filter((d) => d !== upServicio && d !== upTelef && d.rolDetectado === "documento" && paraEste(d));
-  const on = (id) => cfg.bloques[id] !== false;
 
-  // — Bloques fijos —
+  // Hojas de la Base de Datos CSP con un rol y destinadas a este planning
+  const hojasBase = (rolHoja) =>
+    (model.baseDocs || [])
+      .map((d) => ({ doc: d, hojas: (d.hojasEf || []).filter((h) => h.rol === rolHoja && paraPlanning(h.destinos, planning)).map((h) => h.nombre) }))
+      .filter((x) => x.hojas.length);
+  // Fuentes de un rol: Excel sueltos con ese rol + hojas de la Base de Datos
+  const fuentes = (rolGeneral, rolHoja) => [...rol(rolGeneral).map((d) => ({ doc: d, hojas: null })), ...hojasBase(rolHoja)];
+
+  // — Bloques fijos (se incluyen siempre en todos los plannings) —
   for (const bl of BLOQUES) {
-    if (!on(bl.id)) continue;
     if (bl.id === "servicio-extra" && upServicio) {
       await addDoc(upServicio, { title: bl.indice, level: 1, type: "base", special: bl.id });
       continue;
@@ -329,8 +385,12 @@ async function buildPlanning(session, model, planning, onWarn) {
         errores.push(`Falta el bloque fijo "${bl.titulo}" en el servidor`);
         continue;
       }
-      if (bl.id === "consejos" && cfg.enfermera) {
-        const r = await replaceInDocx(buf, "Enfermera (Mar)", `Enfermera (${cfg.enfermera})`);
+      if (bl.id === "consejos" && (cfg.enfermeros || []).length) {
+        const nombres = cfg.enfermeros;
+        const lista = nombres.length > 1 ? `${nombres.slice(0, -1).join(", ")} y ${nombres[nombres.length - 1]}` : nombres[0];
+        const frase = nombres.length > 1 ? `Las alergias se preguntan al equipo de enfermería (${lista}), que lo sabrá.` : `Las alergias se preguntan a la Enfermera (${lista}), ella lo sabrá.`;
+        let r = await replaceInDocx(buf, "Las alergias se preguntan a la Enfermera (Mar), ella lo sabrá.", frase);
+        if (!r.found) r = await replaceInDocx(buf, "Enfermera (Mar)", `Enfermera (${lista})`);
         if (r.found) buf = r.buffer;
         else warn("No se encontró el nombre de la enfermera en «Consejos y normas»; revísalo a mano.");
       }
@@ -353,41 +413,41 @@ async function buildPlanning(session, model, planning, onWarn) {
   }
 
   // — Grupos de nivel (tiendas), grupos de trabajo y servicio de comedor —
-  const tablaGrupos = async (docs, etiqueta, tipo) => {
-    for (const d of docs) {
+  const tablaGrupos = async (lista, etiqueta, tipo) => {
+    for (const { doc: d, hojas } of lista) {
       if (d.ext === ".docx") {
         await addDoc(d, { title: etiqueta, level: 1, type: tipo });
         continue;
       }
       let primera = true;
-      const wbSheets = await (async () => {
-        const wb = await require("./xlsxReader").loadWorkbook(await readDoc(d));
-        return wb.worksheets.map((w) => w.name);
-      })();
-      const { xml, warnings, sheets } = await R.sheetsToXml(await readDoc(d), {
+      const buf = await readDoc(d);
+      const todas = (await loadWorkbook(buf)).worksheets.map((w) => w.name);
+      const candidatas = hojas ? todas.filter((n) => hojas.includes(n)) : todas;
+      const porNivel = hojaDelPlanning(planning, niveles, candidatas, warn);
+      const { xml, warnings, sheets } = await R.sheetsToXml(buf, {
         landscape: true,
         pageBreaks: true,
-        sheetFilter: hojaDelPlanning(planning, niveles, wbSheets),
+        sheetFilter: (n) => candidatas.includes(n) && porNivel(n),
         onSheet: (nombre) => {
           const bm = b.nextBookmark();
-          const generica = /^hoja\s*\d*$/i.test(nombre) || wbSheets.length === 1;
-          entries.push({ title: generica ? etiqueta : `${etiqueta}${primera ? "" : ""} – ${nombre}`, level: primera || generica ? 1 : 2, bookmark: bm });
+          const generica = /^hoja\s*\d*$/i.test(nombre) || candidatas.length === 1;
+          entries.push({ title: generica ? etiqueta : `${etiqueta} – ${nombre}`, level: primera || generica ? 1 : 2, bookmark: bm });
           primera = false;
           return R.anchor(bm);
         },
       });
       warnings.forEach(warn);
       if (!sheets.length) {
-        warn(`«${d.nombre}»: no hay ninguna hoja para ${planning.nombre}; no se incluye.`);
+        warn(`«${d.nombre}»: no hay ninguna hoja de «${etiqueta}» para ${planning.nombre}; no se incluye.`);
         continue;
       }
       b.addGenerated(xml, { landscape: true });
       log.push({ type: tipo, landscape: true, docId: d.id, categoria: d.categoria });
     }
   };
-  await tablaGrupos(rol("grupos_nivel"), "TIENDAS", "grupos_nivel");
-  await tablaGrupos(rol("grupos_trabajo"), "GRUPOS DE TRABAJO", "grupos_trabajo");
-  await tablaGrupos(rol("servicio"), "DISTRIBUCIÓN Y SERVICIOS DE LOS GRUPOS DE TRABAJO EN EL COMEDOR", "servicio");
+  await tablaGrupos(fuentes("grupos_nivel", "grupos_nivel"), "TIENDAS", "grupos_nivel");
+  await tablaGrupos(fuentes("grupos_trabajo", "grupos_trabajo"), "GRUPOS DE TRABAJO", "grupos_trabajo");
+  await tablaGrupos(fuentes("servicio", "servicio"), "DISTRIBUCIÓN Y SERVICIOS DE LOS GRUPOS DE TRABAJO EN EL COMEDOR", "servicio");
 
   // otras tablas generales y documentos generales
   for (const t of tablasExtra) {
@@ -429,9 +489,12 @@ async function buildPlanning(session, model, planning, onWarn) {
       const d = byId(id);
       if (d) await addDoc(d, { title: `Oración de la mañana – ${dm.label}`, type: "oracion_dia", day: dm.label, noIndex: true });
     }
+    const yaDia = new Set(); // un mismo documento no se repite dentro del día (p. ej. «Día temático» tres veces)
     for (const it of dm.items) {
       if (!["actividad", "especial"].includes(it.tipo)) continue;
       for (const id of it.docIds) {
+        if (yaDia.has(id)) continue;
+        yaDia.add(id);
         const d = byId(id);
         if (d) await addDoc(d, { title: it.texto, level: 2, type: "actividad", day: dm.label, special: it.especial });
       }
@@ -442,9 +505,13 @@ async function buildPlanning(session, model, planning, onWarn) {
     }
   }
 
-  // — Documentos específicos de este planning (no dinámicas) —
-  for (const cat of ["alergias", "menu", "enfermeria", "coordinacion", "direccion", "otros"]) {
-    for (const d of model.docsAll.filter((x) => x.categoria === cat && !x.excluir && (x.destinosEfectivos || []).includes(planning.id))) {
+  // — Hojas de la Base de Datos solo para algunos plannings: enfermería y coches/autobuses —
+  await tablaGrupos(hojasBase("enfermeria"), "ENFERMERÍA", "enfermeria");
+  await tablaGrupos(hojasBase("transporte"), "COCHES Y AUTOBUSES", "transporte");
+
+  // — Documentos específicos de este planning (alergias aparte, menú) —
+  for (const cat of ["alergias", "menu"]) {
+    for (const d of model.docsAll.filter((x) => x.categoria === cat && !x.excluir && paraPlanning(x.destinosEfectivos, planning))) {
       if (d.ext === ".xlsx") {
         const bm = b.nextBookmark();
         const { xml, warnings } = await R.sheetsToXml(await readDoc(d), { landscape: true, pageBreaks: true });
@@ -452,14 +519,14 @@ async function buildPlanning(session, model, planning, onWarn) {
         b.addGenerated(R.anchor(bm) + (xml || para(run("(Hoja vacía)", { font: FONT }))), { landscape: true });
         entries.push({ title: d.nombre, level: 1, bookmark: bm });
         log.push({ type: "extra", categoria: cat, docId: d.id, landscape: true });
-      } else if (d.ext === ".docx") {
+      } else if (d.ext === ".docx" || d.ext === ".pdf") {
         await addDoc(d, { title: d.nombre, level: 1, type: "extra" });
       }
     }
   }
 
-  // — Dinámicas (al final) —
-  for (const d of model.dinDocs.filter((x) => (x.destinosEfectivos || []).includes(planning.id))) {
+  // — Dinámicas (al final): las del nivel de este planning (o del grupo del enfermero) —
+  for (const d of model.dinamicasPara(planning)) {
     await addDoc(d, { title: `Dinámicas – ${d.nombre}`, level: 1, type: "dinamica" });
   }
 
@@ -537,10 +604,9 @@ async function verify(planning, model, built) {
   const respEnTablas = built.log.filter((l) => l.type === "horario").reduce((n, l) => n + (l.conResp || 0), 0);
   add("Los responsables están dentro de la tabla de cada día", !model.tu || respEnTablas >= esperadosResp, `${respEnTablas} de ${esperadosResp} actividades`);
 
-  const esperadasAct = model.dias.reduce((n, d) => n + d.items.filter((i) => ["actividad", "especial"].includes(i.tipo)).reduce((m, i) => m + i.docIds.length, 0), 0);
+  const esperadasAct = model.dias.reduce((n, d) => n + new Set(d.items.filter((i) => ["actividad", "especial"].includes(i.tipo)).flatMap((i) => i.docIds)).size, 0);
   const incluidasAct = built.log.filter((l) => l.type === "actividad").length;
   add("Se han incluido todas las actividades con documento", incluidasAct === esperadasAct, `${incluidasAct} de ${esperadasAct}`);
-  add("No queda ninguna actividad ni responsable pendiente", !model.incidencias.some((i) => i.nivel === "critica"));
 
   // orden dentro de cada día: horario → oración de día → actividades → oración de noche
   let ordenOk = true;
@@ -586,7 +652,7 @@ async function verify(planning, model, built) {
   const sens = built.log.filter((l) => ["alergias", "menu"].includes(l.categoria));
   const mal = sens.filter((l) => {
     const d = model.docsAll.find((x) => x.id === l.docId);
-    return d && !(d.destinosEfectivos || []).includes(planning.id);
+    return d && !paraPlanning(d.destinosEfectivos, planning);
   });
   add("Alergias y menú solo aparecen donde corresponde", mal.length === 0);
 
@@ -596,9 +662,10 @@ async function verify(planning, model, built) {
   add("La portada (con los contactos de los monitores) va antes del índice", iTitulo >= 0 && iIndice > iTitulo && (!model.hayContactos || /@/.test(xml.slice(iTitulo, iIndice))), model.hayContactos ? "" : "No se han subido contactos");
   add("El índice recoge todas las secciones", built.entries.length > 0, `${built.entries.length} entradas`);
   add("El logo del año está en el índice", !!built.logo, built.logo ? "" : "No se ha subido el logo del año");
-  const ids = built.log.filter((l) => l.docId && l.type !== "base").map((l) => l.docId);
+  const TIPOS_DOC = ["actividad", "oracion_dia", "oracion_noche", "dinamica", "extra", "extra_general"]; // las hojas de la Base de Datos salen de un mismo Excel
+  const ids = built.log.filter((l) => l.docId && TIPOS_DOC.includes(l.type)).map((l) => l.docId);
   const dup = ids.filter((id, i) => ids.indexOf(id) !== i);
-  add("No hay documentos repetidos sin motivo", dup.length === 0, dup.length ? `${new Set(dup).size} documento(s) incluido(s) más de una vez` : "");
+  add("No hay documentos repetidos sin motivo", dup.length === 0, dup.length ? `${new Set(dup).size} documento(s) incluido(s) más de una vez: ${[...new Set(dup)].map((id) => { const d = model.docsAll.find((x) => x.id === id); const l = built.log.filter((x) => x.docId === id).map((x) => x.day || x.type).join("/"); return `${d ? d.nombre : id} (${l})`; }).join("; ")}` : "");
   add("No ha fallado la inserción de ningún documento", built.errores.length === 0, built.errores.join(" | "));
   return checks;
 }
@@ -611,65 +678,101 @@ async function verify(planning, model, built) {
  */
 async function generate(session, progress = () => {}) {
   const { review, model } = await analyze(session);
-  if (!review.puedeGenerar) {
-    return { ok: false, motivo: "Hay incidencias críticas sin resolver o ningún planning seleccionado", informe: { incidencias: review.incidencias.filter((i) => i.nivel === "critica") } };
+  if (!model.seleccionados.length) {
+    return { ok: false, motivo: "No hay ningún planning seleccionado", informe: { incidencias: [] } };
   }
   const outDir = path.join(session.dir, "out");
   fs.rmSync(outDir, { recursive: true, force: true });
   fs.mkdirSync(outDir, { recursive: true, mode: 0o700 });
+  session.pdfPages = new Map();
 
   const pdfOk = pdfDisponible();
-  const informe = { anio: session.config.anio, generado: new Date().toISOString(), pdfDisponible: pdfOk, plannings: [] };
-  const zip = new JSZip();
+  const pendientes = review.incidencias.filter((i) => i.nivel === "critica").map((i) => i.mensaje);
+  const informe = { anio: session.config.anio, generado: new Date().toISOString(), pdfDisponible: pdfOk, pendientes, plannings: [] };
+  const archivos = []; // [{nombre, ruta}] se meten en el ZIP leyendo del disco (sin tenerlos todos en memoria)
   const seleccion = model.seleccionados;
-  let i = 0;
-  for (const planning of seleccion) {
-    i++;
-    progress({ fase: "ensamblando", planning: planning.nombre, n: i, total: seleccion.length });
-    const base = `Planning_CSP_${session.config.anio}_${safeName(planning.nombre.replace(/^Planning\s+/, ""))}`;
-    const entry = { id: planning.id, nombre: planning.nombre, docx: `${base}.docx`, pdf: null, avisos: [], errores: [] };
-    try {
-      const built = await buildPlanning(session, model, planning);
-      entry.checks = await verify(planning, model, built);
-      entry.avisos = built.avisos;
-      entry.errores = built.errores;
-      entry.estadisticas = { documentos: built.log.length, ...built.stats };
-      const docxPath = path.join(outDir, `${base}.docx`);
-      fs.writeFileSync(docxPath, built.buffer, { mode: 0o600 });
-      zip.file(`${base}.docx`, built.buffer, { compression: "STORE", createFolders: false });
-      if (pdfOk) {
-        progress({ fase: "pdf", planning: planning.nombre, n: i, total: seleccion.length });
-        const r = await toPdf(docxPath, outDir);
-        if (r.ok) {
-          const pdfBuf = fs.readFileSync(r.path);
-          zip.file(`${base}.pdf`, pdfBuf, { compression: "DEFLATE", createFolders: false });
-          entry.pdf = `${base}.pdf`;
-          try {
-            entry.paginas = (await PDFDocument.load(pdfBuf, { ignoreEncryption: true })).getPageCount();
-          } catch (_) {}
-          entry.checks.push({ n: entry.checks.length + 1, nombre: "El PDF se ha generado", ok: true, detalle: entry.paginas ? `${entry.paginas} páginas` : "" });
-        } else {
-          entry.checks.push({ n: entry.checks.length + 1, nombre: "El PDF se ha generado", ok: false, detalle: r.error });
-          entry.avisos.push(`PDF no generado: ${r.error}`);
-        }
-      }
-    } catch (e) {
-      entry.errores.push(e.message);
-      entry.checks = entry.checks || [{ n: 1, nombre: "Se ha podido construir el planning", ok: false, detalle: e.message }];
+  try {
+    // PDF (de la biblioteca de la app o subidos) que hacen falta: se descargan y convierten una sola vez
+    const ids = new Set();
+    for (const dm of model.dias) {
+      dm.oracionDia.concat(dm.oracionNoche).forEach((id) => ids.add(id));
+      dm.items.forEach((it) => it.docIds.forEach((id) => ids.add(id)));
     }
-    informe.plannings.push(entry);
-    if (global.gc) global.gc();
+    for (const p of seleccion) model.dinamicasPara(p).forEach((d) => ids.add(d.id));
+    const pdfs = model.docsAll.filter((d) => ids.has(d.id) && d.ext === ".pdf");
+    let k = 0;
+    for (const d of pdfs) {
+      progress({ fase: "preparando documentos PDF", planning: d.nombre, n: ++k, total: pdfs.length });
+      try {
+        await pdfPagesOf(session, d);
+      } catch (_) {
+        /* el error se anota al incluir el documento */
+      }
+    }
+
+    let i = 0;
+    for (const planning of seleccion) {
+      i++;
+      progress({ fase: "ensamblando", planning: planning.nombre, n: i, total: seleccion.length });
+      const base = `Planning_CSP_${session.config.anio}_${safeName(planning.nombre.replace(/^Planning\s+/, ""))}`;
+      const entry = { id: planning.id, nombre: planning.nombre, docx: `${base}.docx`, pdf: null, avisos: [], errores: [] };
+      try {
+        const built = await buildPlanning(session, model, planning);
+        entry.checks = await verify(planning, model, built);
+        entry.avisos = built.avisos;
+        entry.errores = built.errores;
+        entry.estadisticas = { documentos: built.log.length, paginasPdf: built.log.filter((l) => l.pdf).reduce((n, l) => n + (l.paginas || 0), 0), ...built.stats };
+        const docxPath = path.join(outDir, `${base}.docx`);
+        fs.writeFileSync(docxPath, built.buffer, { mode: 0o600 });
+        archivos.push({ nombre: `${base}.docx`, ruta: docxPath });
+        if (pdfOk) {
+          progress({ fase: "pdf", planning: planning.nombre, n: i, total: seleccion.length });
+          const r = await toPdf(docxPath, outDir);
+          if (r.ok) {
+            archivos.push({ nombre: `${base}.pdf`, ruta: r.path });
+            entry.pdf = `${base}.pdf`;
+            try {
+              entry.paginas = (await PDFDocument.load(fs.readFileSync(r.path), { ignoreEncryption: true })).getPageCount();
+            } catch (_) {}
+            entry.checks.push({ n: entry.checks.length + 1, nombre: "El PDF se ha generado", ok: true, detalle: entry.paginas ? `${entry.paginas} páginas` : "" });
+          } else {
+            entry.checks.push({ n: entry.checks.length + 1, nombre: "El PDF se ha generado", ok: false, detalle: r.error });
+            entry.avisos.push(`PDF no generado: ${r.error}`);
+          }
+        }
+      } catch (e) {
+        entry.errores.push(e.message);
+        entry.checks = entry.checks || [{ n: 1, nombre: "Se ha podido construir el planning", ok: false, detalle: e.message }];
+      }
+      informe.plannings.push(entry);
+      if (global.gc) global.gc();
+    }
+  } finally {
+    // las páginas de los PDF ya están dentro de los Word
+    fs.rmSync(path.join(session.dir, "pdfpages"), { recursive: true, force: true });
+    session.pdfPages = null;
   }
   if (!pdfOk) {
     informe.avisoPdf = "Este servidor no tiene LibreOffice, así que solo se han generado los DOCX. Abre cada DOCX en Word y usa Archivo → Exportar → PDF (así también se actualizan los números de página del índice).";
   }
-  zip.file("INFORME.txt", informeTexto(informe));
+  const informePath = path.join(outDir, "INFORME.txt");
+  fs.writeFileSync(informePath, informeTexto(informe), { mode: 0o600 });
+  archivos.push({ nombre: "INFORME.txt", ruta: informePath });
   const zipPath = path.join(outDir, `Plannings_CSP_${session.config.anio}.zip`);
-  fs.writeFileSync(zipPath, await zip.generateAsync({ type: "nodebuffer", compression: "STORE" }), { mode: 0o600 });
+  await new Promise((resolve, reject) => {
+    // los DOCX ya van comprimidos (ZIP) y los PDF también: se guardan sin recomprimir
+    const zf = new yazl.ZipFile();
+    const out = fs.createWriteStream(zipPath, { mode: 0o600 });
+    out.on("close", resolve).on("error", reject);
+    zf.outputStream.on("error", reject).pipe(out);
+    for (const a of archivos) zf.addFile(a.ruta, a.nombre, { compress: /\.txt$/.test(a.nombre) });
+    zf.end();
+  });
   // los DOCX/PDF sueltos ya están en el ZIP
   for (const f of fs.readdirSync(outDir)) if (f !== path.basename(zipPath)) fs.rmSync(path.join(outDir, f), { force: true, recursive: true });
   const fallos = informe.plannings.some((p) => p.errores.length || (p.checks || []).some((c) => !c.ok && !/PDF/.test(c.nombre)));
   informe.todoCorrecto = !fallos;
+  informe.conPendientes = pendientes.length;
   return { ok: true, zipPath, informe };
 }
 
@@ -678,6 +781,11 @@ function informeTexto(inf) {
   L.push(`INFORME DE GENERACIÓN – CSP ${inf.anio}`);
   L.push(`Generado: ${inf.generado}`);
   L.push("");
+  if (inf.pendientes && inf.pendientes.length) {
+    L.push(`PROBLEMAS PENDIENTES AL GENERAR (${inf.pendientes.length}): los plannings se han generado igualmente; lo que falta no está incluido.`);
+    for (const m of inf.pendientes) L.push(`  - ${m}`);
+    L.push("");
+  }
   for (const p of inf.plannings) {
     L.push(`== ${p.nombre} ==`);
     L.push(`Archivos: ${p.docx}${p.pdf ? ", " + p.pdf : ""}${p.paginas ? ` (${p.paginas} páginas)` : ""}`);

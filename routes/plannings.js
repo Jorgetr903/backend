@@ -11,6 +11,7 @@ const multer = require("multer");
 const checkUploadKey = require("../middleware/checkUploadKey");
 const S = require("../services/plannings/session");
 const { analyze, CATEGORIAS, listPlannings } = require("../services/plannings/analysis");
+const { ROLES_HOJA } = require("../services/plannings/basedatos");
 const { generate, catalogoBloques, pdfDisponible } = require("../services/plannings/generate");
 
 const router = express.Router();
@@ -45,7 +46,7 @@ async function estadoCompleto(s) {
     id: s.id,
     config: s.config,
     categorias: CATEGORIAS.map((c) => ({ id: c.id, nombre: c.nombre })),
-    bloques: catalogoBloques().map((b) => ({ ...b, activo: s.config.bloques[b.id] !== false })),
+    bloques: catalogoBloques(), // siempre se incluyen todos: solo informativo
     pdfDisponible: pdfDisponible(),
     revision: review,
     generacion: s.job ? { estado: s.job.estado, progreso: s.job.progreso, error: s.job.error || null, informe: s.job.informe || null } : null,
@@ -74,6 +75,8 @@ router.get(
 router.post("/sesiones/:id/documentos", loadSession, upload.array("archivos", 60), wrap(async (req, res) => {
   const s = req.sesion;
   const categoria = String((req.body && req.body.categoria) || "");
+  // contraseña del Excel protegido (Base de Datos CSP): solo se usa para descifrar, no se guarda
+  const password = typeof (req.body && req.body.password) === "string" ? req.body.password : "";
   const files = req.files || [];
   const added = [];
   const skipped = [];
@@ -85,14 +88,14 @@ router.post("/sesiones/:id/documentos", loadSession, upload.array("archivos", 60
   for (const f of files) {
     try {
       if (path.extname(f.originalname || "").toLowerCase() === ".zip") {
-        const r = await S.addZip(s, categoria, f.path, f.originalname);
+        const r = await S.addZip(s, categoria, f.path, f.originalname, password);
         added.push(...r.added.map((d) => d.nombre));
         skipped.push(...r.skipped);
       } else if (f.size > S.LIMITS.maxFile) {
         fs.rmSync(f.path, { force: true });
         errores.push(`"${f.originalname}" supera los ${Math.round(S.LIMITS.maxFile / 1048576)} MB permitidos`);
       } else {
-        const d = await S.registerFile(s, { categoria, originalname: f.originalname, filePath: f.path, size: f.size });
+        const d = await S.registerFile(s, { categoria, originalname: f.originalname, filePath: f.path, size: f.size, password });
         added.push(d.nombre);
       }
     } catch (e) {
@@ -121,9 +124,7 @@ router.patch(
     const s = req.sesion;
     const b = req.body || {};
     if (b.config) {
-      const merged = S.sanitizeConfig({ ...s.config, ...b.config });
-      if (b.config.bloques) merged.bloques = { ...s.config.bloques, ...b.config.bloques };
-      s.config = merged;
+      s.config = S.sanitizeConfig({ ...s.config, ...b.config });
     }
     if (b.items && typeof b.items === "object") {
       for (const [key, v] of Object.entries(b.items)) {
@@ -169,6 +170,20 @@ router.patch(
         if ("nivel" in v) d.nivel = v.nivel ? String(v.nivel).slice(0, 40) : null;
         if ("dia" in v) d.dia = v.dia ? String(v.dia).toUpperCase().slice(0, 4) : null;
         if ("noche" in v) d.noche = v.noche == null ? null : !!v.noche;
+        if (v.hojas && typeof v.hojas === "object" && d.categoria === "base_datos") {
+          d.hojasCfg = d.hojasCfg || {};
+          for (const [nombre, h] of Object.entries(v.hojas)) {
+            if (!(d.hojas || []).includes(nombre)) continue;
+            if (h === null) {
+              delete d.hojasCfg[nombre];
+              continue;
+            }
+            const cur = { ...(d.hojasCfg[nombre] || {}) };
+            if (typeof h.rol === "string" && ROLES_HOJA.some((r) => r.id === h.rol)) cur.rol = h.rol;
+            if (Array.isArray(h.destinos)) cur.destinos = h.destinos.map((x) => String(x).slice(0, 40)).slice(0, 12);
+            d.hojasCfg[nombre] = cur;
+          }
+        }
         if (typeof v.rol === "string" && d.categoria === "general" && ["principal", "turnos", "contactos", "grupos_nivel", "grupos_trabajo", "servicio", "tabla", "documento"].includes(v.rol)) d.rol = v.rol;
         if (typeof v.categoria === "string" && CATEGORIAS.some((c) => c.id === v.categoria)) {
           d.categoria = v.categoria;
@@ -181,7 +196,8 @@ router.patch(
   })
 );
 
-// 6. Generar (en segundo plano para no agotar el tiempo de la petición)
+// 6. Generar (en segundo plano para no agotar el tiempo de la petición).
+//    Se puede generar aunque queden problemas por resolver, pero hay que confirmarlo.
 router.post(
   "/sesiones/:id/generar",
   loadSession,
@@ -189,10 +205,21 @@ router.post(
     const s = req.sesion;
     if (generando) return res.status(429).json({ mensaje: "Ya se está generando otro planning en el servidor. Espera un momento." });
     if (s.job && s.job.estado === "generando") return res.status(409).json({ mensaje: "Ya se está generando" });
-    if (Array.isArray(req.body && req.body.plannings)) s.config.plannings = req.body.plannings.map(String);
-    const { review } = await analyze(s);
-    if (!review.puedeGenerar) {
-      return res.status(422).json({ mensaje: "Hay incidencias críticas sin resolver (o no hay ningún planning seleccionado).", criticas: review.incidencias.filter((i) => i.nivel === "critica") });
+    let { review } = await analyze(s);
+    if (Array.isArray(req.body && req.body.plannings)) {
+      const elegidos = new Set(req.body.plannings.map(String));
+      s.config.noPlannings = review.plannings.filter((p) => !elegidos.has(p.id)).map((p) => p.id);
+      ({ review } = await analyze(s));
+    }
+    if (!review.puedeGenerar) return res.status(422).json({ mensaje: "No hay ningún planning seleccionado." });
+    const problemas = review.incidencias.filter((i) => i.nivel === "critica");
+    if (problemas.length && !(req.body && req.body.confirmarProblemas === true)) {
+      return res.status(409).json({
+        requiereConfirmacion: true,
+        mensaje: `Quedan ${problemas.length} problema(s) por resolver. Si generas ahora, lo que falta no se incluirá en los plannings.`,
+        criticas: problemas.length,
+        problemas: problemas.slice(0, 12).map((i) => i.mensaje),
+      });
     }
     generando = true;
     s.busy = true;
@@ -215,6 +242,16 @@ router.post(
         s.busy = false;
         S.touch(s);
       });
+  })
+);
+
+// Volver a leer la biblioteca de la app (por si se ha subido algo mientras tanto)
+router.post(
+  "/sesiones/:id/biblioteca/actualizar",
+  loadSession,
+  wrap(async (req, res) => {
+    await S.ensureBd(req.sesion, true);
+    res.json(await estadoCompleto(req.sesion));
   })
 );
 

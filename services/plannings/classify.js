@@ -59,7 +59,8 @@ function autoCategoria(filename) {
   const name = fixFilename(filename);
   const ext = (name.match(/\.[a-z0-9]+$/i) || [""])[0].toLowerCase();
   const n = norm(name);
-  if ([".png", ".jpg", ".jpeg"].includes(ext)) return "logo";
+  if ([".png", ".jpg", ".jpeg", ".svg"].includes(ext)) return "logo";
+  if (/base de datos/.test(n)) return "base_datos";
   if (/\balergi/.test(n)) return "alergias";
   if (/\bmenu\b/.test(n)) return "menu";
   if (ext === ".xlsx") return "general";

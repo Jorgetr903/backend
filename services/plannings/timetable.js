@@ -209,6 +209,7 @@ const ROUTINE = [
   /^grupo de nivel/,
   /^dinamica ?\d*/,
   /^himnos/,
+  /^alarido/, // el alarido no es una actividad con documento
   /^piscin/,
   /^\(?evaluacion/,
   /^explicacion/,
