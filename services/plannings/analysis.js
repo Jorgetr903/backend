@@ -683,7 +683,7 @@ async function analyze(session) {
       destinos: d.destinosEfectivos,
       nivel: d.nivelDetectado || undefined,
       excluir: !!d.excluir,
-      aviso: (d.avisos && d.avisos[0]) || (d.info && d.info.ok && d.info.landscape ? "Tiene páginas horizontales; se conservarán tal cual" : undefined) || (d.ext === ".pdf" && d.info && d.info.ok ? `PDF de ${d.info.pages} página(s): se incluirá como imágenes (no editable)` : undefined),
+      aviso: (d.avisos && d.avisos[0]) || (d.info && d.info.ok && d.info.landscape ? "Tiene páginas horizontales; se conservarán tal cual" : undefined) || (d.ext === ".pdf" && d.info && d.info.ok ? `PDF de ${d.info.pages} página(s): se convertirá a contenido Word editable (texto, tablas e imágenes)` : undefined),
     })),
     dias: dias.map((d) => ({
       label: d.label,
@@ -708,7 +708,9 @@ async function analyze(session) {
       ordenOraciones: { dia: d.oracionDia.length, noche: d.oracionNoche.length },
     })),
     incidencias: incUnicas,
-    puedeGenerar: seleccionados.length > 0,
+    puedeGenerar: seleccionados.length > 0 && subidos.some((d) => d.categoria === "logo" && !d.excluir),
+    faltaLogo: !subidos.some((d) => d.categoria === "logo" && !d.excluir),
+    sinPlanningElegido: seleccionados.length === 0,
     criticas: criticas.length,
     avisos: incUnicas.length - criticas.length,
   };

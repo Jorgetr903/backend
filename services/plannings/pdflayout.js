@@ -576,11 +576,16 @@ function splitSpanCells(t, texts) {
 function tableXml(bl, builder, availPt, imgXml, pageCtx) {
   const t = bl.table;
   const widthPt = t.bbox.x2 - t.bbox.x1;
-  const k = widthPt > availPt ? availPt / widthPt : 1;
+  // tablas de material (RECURSOS MATERIALES / MATERIAL FUNGIBLE / NO FUNGIBLE): ocupan todo el ancho útil
+  const r0 = t.cells.filter((c) => c.r <= 1);
+  const hy1 = Math.min(...r0.map((c) => c.y1)), hy2 = Math.max(...r0.map((c) => c.y2));
+  const cabeza = bl.texts.filter((x) => x.y - 0.3 * x.size >= hy1 - 1 && x.y - 0.3 * x.size <= hy2 + 1).map((x) => x.str).join(" ");
+  const esMaterial = /material\s+(no\s+)?fungible|recursos\s+materiales/i.test(cabeza);
+  const k = esMaterial ? availPt / widthPt : widthPt > availPt ? availPt / widthPt : 1;
   const colW = [];
   for (let c = 0; c < t.cols; c++) colW.push(Math.round((t.xs[c + 1] - t.xs[c]) * k * TW));
   const total = colW.reduce((a, b) => a + b, 0);
-  const indent = Math.max(0, Math.round((t.bbox.x1 - pageCtx.left) * k * TW));
+  const indent = esMaterial ? 0 : Math.max(0, Math.round((t.bbox.x1 - pageCtx.left) * k * TW));
   const bsz = Math.max(2, Math.min(24, Math.round(t.lw * 8)));
   const borders = ["top", "left", "bottom", "right", "insideH", "insideV"].map((b) => `<w:${b} w:val="nil"/>`).join("");
   const cellBorders = (c) => {

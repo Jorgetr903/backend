@@ -138,6 +138,7 @@
         <button class="btn verde grande" id="btnGenerar" disabled>Generar plannings</button>
         <div class="barra" id="barraGen"><div></div></div>
         <div class="msg" id="msgGen"></div>
+        <div class="msg error oculto" id="avisoLogo">Falta subir el logo de <span id="anioLogo"></span>. <a href="#" id="irLogo">Ir a «Logo del año» para subirlo</a></div>
         <div id="informe"></div>
         <button class="btn grande oculto" id="btnDescargar" style="margin-top:10px">⬇ Descargar ZIP</button>
         <button class="btn rojo mini oculto" id="btnBorrar" style="margin-top:14px">Borrar todos los archivos del servidor</button>
@@ -276,7 +277,7 @@
           (c.id !== "general" && !docs.length) ? el("button", { class: "btn mini gris", text: c.marcadaNA ? "Marcar como necesaria" : "No aplicable", onclick: function () { var o = {}; o[c.id] = c.marcadaNA ? "" : "na"; parchear({ categorias: o }); } }) : null
         ])
       ]);
-      var box = el("div", { class: "cat" }, [cab, inp]);
+      var box = el("div", { class: "cat", id: "cat-" + c.id }, [cab, inp]);
       docs.forEach(function (d) { box.appendChild(filaDoc(d, nombres)); });
       cont.appendChild(box);
     });
@@ -454,8 +455,9 @@
     rev.plannings.forEach(function (p) {
       var cb = el("input", { type: "checkbox" }); cb.checked = p.seleccionado;
       cb.onchange = function () {
-        var sel = rev.plannings.filter(function (x) { return x.id === p.id ? cb.checked : x.seleccionado; }).map(function (x) { return x.id; });
-        parchear({ config: { plannings: sel } });
+        // el servidor guarda los plannings NO elegidos (config.noPlannings)
+        var no = rev.plannings.filter(function (x) { return x.id === p.id ? !cb.checked : !x.seleccionado; }).map(function (x) { return x.id; });
+        parchear({ config: { noPlannings: no } });
       };
       cont.appendChild(el("div", { class: "doc" }, [cb, el("div", { class: "n", text: p.nombre }), p.tipo === "especial" ? el("span", { class: "ayuda", text: "Necesita: " + p.requiere.map(function (r) { var c = rev.categorias.filter(function (x) { return x.id === r; })[0]; return c ? c.nombre : r; }).join(", ") }) : null]));
     });
@@ -465,16 +467,20 @@
   function pintarGeneracion() {
     var rev = estado.revision, g = estado.generacion;
     var gen = g && g.estado === "generando";
-    $("btnGenerar").disabled = !rev.puedeGenerar || gen;
-    $("btnGenerar").textContent = !rev.puedeGenerar ? "Elige al menos un planning" : "Generar plannings" + (rev.criticas ? " (quedan " + rev.criticas + " problema(s) por resolver)" : "");
+    $("btnGenerar").disabled = !rev.puedeGenerar || gen || !!rev.faltaLogo;
+    $("btnGenerar").textContent = rev.sinPlanningElegido ? "Elige al menos un planning" : rev.faltaLogo ? "Falta el logo de " + rev.anio : "Generar plannings" + (rev.criticas ? " (quedan " + rev.criticas + " problema(s) por resolver)" : "");
     $("barraGen").style.display = gen ? "block" : "none";
+    var sinLogo = !!rev.faltaLogo && !gen;
+    $("avisoLogo").classList.toggle("oculto", !sinLogo);
+    $("anioLogo").textContent = rev.anio;
+    $("irLogo").onclick = function (ev) { ev.preventDefault(); var c = $("cat-logo"); if (c) { c.scrollIntoView({ behavior: "smooth", block: "center" }); c.style.outline = "3px solid #c0392b"; setTimeout(function () { c.style.outline = ""; }, 2500); } };
     var inf = $("informe"); inf.innerHTML = "";
     $("btnDescargar").classList.toggle("oculto", !(g && g.estado === "listo"));
     $("btnBorrar").classList.toggle("oculto", !(g && g.estado === "listo"));
     if (gen) msg("msgGen", "ok", "Generando… " + (g.progreso && g.progreso.planning ? g.progreso.planning + " (" + g.progreso.fase + ")" : ""));
     else if (g && g.estado === "error") msg("msgGen", "error", g.error || "Ha fallado la generación");
     else if (g && g.estado === "listo") msg("msgGen", g.informe.todoCorrecto ? "ok" : "error", !g.informe.todoCorrecto ? "Generado, pero alguna comprobación ha fallado: revisa el informe." : g.informe.conPendientes ? "Generado. Había " + g.informe.conPendientes + " problema(s) sin resolver: lo que faltaba no está incluido (están listados al principio de INFORME.txt dentro del ZIP)." : "Todo generado y comprobado. Ya puedes descargar el ZIP.");
-    else msg("msgGen", "", "");
+    else msg("msgGen", rev.sinPlanningElegido ? "error" : "", rev.sinPlanningElegido ? "Marca al menos un planning para poder generar." : "");
     if (g && g.informe && g.informe.plannings) {
       if (g.informe.avisoPdf) inf.appendChild(el("p", { class: "ayuda", text: "ℹ " + g.informe.avisoPdf }));
       g.informe.plannings.forEach(function (p) {

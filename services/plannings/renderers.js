@@ -451,6 +451,7 @@ module.exports = {
   title,
   anchor,
   withExtraLines,
+  daysGrid,
   dayTableXml,
   generalPlanningPages,
   turnosXml,

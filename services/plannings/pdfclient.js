@@ -35,7 +35,7 @@ function spawn() {
     pending.clear();
   };
   c.on("exit", (code, sig) => die(code === 0 ? "reiniciado" : `el conversor de PDF se cerró (${sig || code}); probablemente por falta de memoria`));
-  c.on("error", (e) => die(`no se pudo arrancar el conversor de PDF: ${e.message}`));
+  c.on("error", (e) => die(/EPIPE|ERR_IPC_CHANNEL_CLOSED|channel closed/i.test(String(e && (e.code || e.message))) ? "reiniciado" : `no se pudo arrancar el conversor de PDF: ${e.message}`));
   return c;
 }
 
@@ -80,7 +80,7 @@ async function viaChild(buffer, tmpDir) {
         c.pending.set(id, { resolve: (m) => { clearTimeout(t); resolve(m); } });
         try { c.send({ id, input, outFile }); } catch (e) { clearTimeout(t); c.pending.delete(id); resolve({ ok: false, error: "reiniciado" }); }
       });
-      if (!res.ok && res.error === "reiniciado" && attempt === 0) continue; // el proceso se había reciclado justo antes
+      if (!res.ok && (res.error === "reiniciado" || /^no se pudo arrancar/.test(res.error)) && attempt === 0) continue; // el proceso se había reciclado justo antes
       if (!res.ok) throw new Error(res.error);
       return rehydrate(JSON.parse(fs.readFileSync(outFile, "utf8")), tmpDir, outFile);
     }

@@ -84,6 +84,38 @@ function mimeFor(ext) {
 
 const NOFOLDERS = { createFolders: false };
 
+
+// ───────────────────────── Fuente del cuerpo: Calibri Light 11 ─────────────────────────
+
+/** ¿Es una tabla de material (RECURSOS MATERIALES / MATERIAL FUNGIBLE / NO FUNGIBLE)? Se mira el texto de su primera fila */
+function esTablaMaterial(tbl) {
+  // algunas tablas empiezan con una fila vacía de separación: se miran las tres primeras
+  const trs = childEls(tbl, "tr").slice(0, 3);
+  return trs.some((tr) => /material\s+(no\s+)?fungible|recursos\s+materiales/i.test(els(tr, "t").map((t) => t.textContent).join(" ")));
+}
+
+const FUENTE_CUERPO = "Calibri Light";
+const FUENTE_SIMBOLO = /symbol|wingdings|webdings|segoe ui symbol|segoe ui emoji|emoji/i;
+
+/**
+ * Unifica la fuente del texto de cuerpo (actividades, oraciones, dinámicas): todo en Calibri Light
+ * y los tamaños sueltos de 10 a 13,5 pt en 11 pt. Se respetan las fuentes de símbolos (viñetas
+ * e iconos) y los títulos grandes (≥ 14 pt). Trabaja sobre el XML (documento, estilos, numeración).
+ */
+function normalizaFuentes(xml) {
+  if (!xml) return xml;
+  return xml
+    .replace(/<w:rFonts\b[^>]*\/>/g, (m) => {
+      const vals = [...m.matchAll(/w:(?:ascii|hAnsi|cs|eastAsia)="([^"]*)"/g)].map((x) => x[1]);
+      if (vals.some((v) => FUENTE_SIMBOLO.test(v))) return m;
+      return `<w:rFonts w:ascii="${FUENTE_CUERPO}" w:hAnsi="${FUENTE_CUERPO}" w:eastAsia="${FUENTE_CUERPO}" w:cs="${FUENTE_CUERPO}"/>`;
+    })
+    .replace(/<w:(sz|szCs) w:val="(\d+(?:\.\d+)?)"\/>/g, (m, tag, v) => {
+      const n = parseFloat(v);
+      return n >= 20 && n <= 27 ? `<w:${tag} w:val="22"/>` : m;
+    });
+}
+
 class PlanningBuilder {
   /**
    * @param {object} opts {year, lema}
@@ -107,6 +139,11 @@ class PlanningBuilder {
 
   warn(msg) {
     if (!this.warnings.includes(msg)) this.warnings.push(msg);
+  }
+
+  /** Calibri Light 11 en el texto de cuerpo (contenido importado de Word o de PDF) */
+  normalizaFuentes(xml) {
+    return normalizaFuentes(xml);
   }
 
   nextBookmark(prefix = "idx") {
@@ -241,7 +278,7 @@ class PlanningBuilder {
     // 7. Serializar el cuerpo
     let xml = ser(body);
     xml = xml.replace(/^<w:body[^>]*>/, "").replace(/<\/w:body>\s*$/, "");
-    this.chunks.push(xml);
+    this.chunks.push(this.normalizaFuentes(xml));
     this.stats.docs++;
     return { styleMap, relMap };
   }
@@ -422,7 +459,7 @@ class PlanningBuilder {
         if (v && used.has(v)) ps.setAttributeNS(W, "w:val", newId(v));
         else removeNode(ps);
       }
-      this.abstractNums.push(ser(absClone));
+      this.abstractNums.push(normalizaFuentes(ser(absClone)));
       const numClone = num.cloneNode(true);
       numClone.setAttributeNS(W, "w:numId", String(newNum));
       const ref = firstChild(numClone, "abstractNumId");
@@ -436,7 +473,7 @@ class PlanningBuilder {
     const ddRPr = docDefaults ? els(docDefaults, "rPr")[0] : null;
     this.styles.push(
       `<w:style w:type="paragraph" w:customStyle="1" w:styleId="${defaultsId}"><w:name w:val="${defaultsId}"/>` +
-        `<w:qFormat/>${ddPPr ? ser(ddPPr) : ""}${ddRPr ? ser(ddRPr) : ""}</w:style>`
+        `<w:qFormat/>${ddPPr ? ser(ddPPr) : ""}${ddRPr ? normalizaFuentes(ser(ddRPr)) : ""}</w:style>`
     );
 
     let hasNormal = false;
@@ -475,7 +512,7 @@ class PlanningBuilder {
       }
       styleMap.set(id, newId(id));
       if (defaultPara && id === defaultPara.getAttributeNS(W, "styleId")) hasNormal = true;
-      this.styles.push(ser(clone));
+      this.styles.push(normalizaFuentes(ser(clone)));
     }
     if (!hasNormal) {
       this.styles.push(
@@ -495,7 +532,7 @@ class PlanningBuilder {
         const nm = firstChild(clone, "name");
         if (nm) nm.setAttributeNS(W, "w:val", newId(id));
         for (const t of ["basedOn", "link", "next"]) removeNode(firstChild(clone, t));
-        this.styles.push(ser(clone));
+        this.styles.push(normalizaFuentes(ser(clone)));
         styleMap.set(id, newId(id));
       }
       tblDefaultId = newId(id);
@@ -711,7 +748,7 @@ class PlanningBuilder {
   _fitToWidth(elements, textW, origTextW) {
     for (const el of elements) {
       const tables = el.localName === "tbl" ? [el] : [];
-      for (const t of tables) this._scaleTable(t, textW);
+      for (const t of tables) this._scaleTable(t, textW, esTablaMaterial(t));
       // imágenes incrustadas y flotantes
       for (const ext of els(el, "extent", NS.wp)) {
         const cx = parseInt(ext.getAttribute("cx") || "0", 10);
@@ -755,17 +792,38 @@ class PlanningBuilder {
     }
   }
 
-  _scaleTable(tbl, textW) {
+  _scaleTable(tbl, textW, ancho = false) {
     const grid = firstChild(tbl, "tblGrid");
     if (!grid) return;
+    // cambios de rejilla pendientes (revisiones): se descartan, la rejilla vigente es la que cuenta
+    for (const ch of childEls(grid, "tblGridChange")) grid.removeChild(ch);
+    // Algunos exportadores (Google Docs) duplican la rejilla: sobran columnas que ninguna fila usa
+    {
+      const todas = childEls(grid, "gridCol");
+      let maxCol = 0;
+      let desplazada = false;
+      for (const tr of childEls(tbl, "tr")) {
+        let n = 0;
+        if (els(tr, "gridBefore").length || els(tr, "gridAfter").length) desplazada = true;
+        for (const tc of childEls(tr, "tc")) {
+          const tcp = firstChild(tc, "tcPr");
+          const gs = tcp ? firstChild(tcp, "gridSpan") : null;
+          n += gs ? parseInt(gs.getAttributeNS(W, "val") || "1", 10) || 1 : 1;
+        }
+        maxCol = Math.max(maxCol, n);
+      }
+      if (!desplazada && maxCol > 0 && todas.length > maxCol) for (const c of todas.slice(maxCol)) grid.removeChild(c);
+    }
     const cols = childEls(grid, "gridCol");
     const widths = cols.map((c) => parseInt(c.getAttributeNS(W, "w") || "0", 10));
     const total = widths.reduce((a, b) => a + b, 0);
     const tpr = firstChild(tbl, "tblPr");
     const ind = tpr ? firstChild(tpr, "tblInd") : null;
     const indW = ind ? parseInt(ind.getAttributeNS(W, "w") || "0", 10) : 0;
-    if (!total || total + Math.max(indW, 0) <= textW) return;
-    const f = (textW - Math.max(indW, 0) * 0) / (total + Math.max(indW, 0));
+    if (!total) return;
+    if (!ancho && total + Math.max(indW, 0) <= textW) return;
+    // tablas de material: todo el ancho útil, pegadas al margen izquierdo
+    const f = ancho ? textW / total : (textW - Math.max(indW, 0) * 0) / (total + Math.max(indW, 0));
     cols.forEach((c, i) => c.setAttributeNS(W, "w:w", String(Math.max(1, Math.round(widths[i] * f)))));
     for (const tc of els(tbl, "tcW")) {
       const type = tc.getAttributeNS(W, "type");
@@ -777,7 +835,7 @@ class PlanningBuilder {
       if (tw && (tw.getAttributeNS(W, "type") === "dxa" || !tw.getAttributeNS(W, "type"))) {
         tw.setAttributeNS(W, "w:w", String(Math.round(total * f)));
       }
-      if (ind) ind.setAttributeNS(W, "w:w", String(Math.round(indW * f)));
+      if (ind) ind.setAttributeNS(W, "w:w", ancho ? "0" : String(Math.round(indW * f)));
     }
     this.stats.tablesScaled++;
   }
@@ -858,7 +916,7 @@ class PlanningBuilder {
 
     const stylesXml =
       `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
-      `<w:styles xmlns:w="${W}"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:eastAsia="Calibri" w:cs="Calibri"/><w:sz w:val="22"/><w:szCs w:val="22"/><w:lang w:val="es-ES"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:widowControl w:val="0"/></w:pPr></w:pPrDefault></w:docDefaults>` +
+      `<w:styles xmlns:w="${W}"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri Light" w:hAnsi="Calibri Light" w:eastAsia="Calibri Light" w:cs="Calibri Light"/><w:sz w:val="22"/><w:szCs w:val="22"/><w:lang w:val="es-ES"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:widowControl w:val="0"/></w:pPr></w:pPrDefault></w:docDefaults>` +
       baseStyles +
       this.styles.join("") +
       `</w:styles>`;
@@ -924,4 +982,4 @@ class PlanningBuilder {
   }
 }
 
-module.exports = { PlanningBuilder, parseXml, els, childEls, firstChild, ser };
+module.exports = { PlanningBuilder, parseXml, els, childEls, firstChild, ser, normalizaFuentes, esTablaMaterial };

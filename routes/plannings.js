@@ -211,7 +211,8 @@ router.post(
       s.config.noPlannings = review.plannings.filter((p) => !elegidos.has(p.id)).map((p) => p.id);
       ({ review } = await analyze(s));
     }
-    if (!review.puedeGenerar) return res.status(422).json({ mensaje: "No hay ningún planning seleccionado." });
+    if (review.sinPlanningElegido) return res.status(422).json({ mensaje: "No hay ningún planning seleccionado." });
+    if (review.faltaLogo) return res.status(422).json({ faltaLogo: true, mensaje: `Falta subir el logo de ${review.anio}` });
     const problemas = review.incidencias.filter((i) => i.nivel === "critica");
     if (problemas.length && !(req.body && req.body.confirmarProblemas === true)) {
       return res.status(409).json({

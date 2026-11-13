@@ -8,7 +8,7 @@ const { spawn, spawnSync } = require("child_process");
 const JSZip = require("jszip");
 const yazl = require("yazl");
 const { PDFDocument } = require("pdf-lib");
-const { PlanningBuilder, parseXml } = require("./docxmerge");
+const { PlanningBuilder } = require("./docxmerge");
 const { esc, run, para } = require("./ooxml");
 const R = require("./renderers");
 const { FONT_LIGHT } = R;
@@ -20,6 +20,7 @@ const { convertPdfIsolated, stopConverter } = require("./pdfclient");
 const BD = require("./bd");
 const BDX = require("./basedatos");
 const { loadWorkbook } = require("./xlsxReader");
+const T = require("./tablas");
 
 const BASE_DIR = path.join(__dirname, "..", "..", "assets", "plannings", "base");
 
@@ -160,6 +161,103 @@ async function replaceImageInDocx(buffer, mediaName, newBuf) {
   return { buffer: await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" }), found: true };
 }
 
+
+/**
+ * Montaje de Altus: título e imagen siempre en la misma página.
+ * La imagen pasa de flotante («arriba y abajo», 22,65 cm de alto) a imagen en línea, centrada,
+ * de ≤ 20,5 cm de alto con la misma proporción; el título pierde su interlineado de 2,4 líneas.
+ */
+async function adaptAltus(buffer, altoMaxCm = 20.5) {
+  const zip = await JSZip.loadAsync(buffer);
+  const f = zip.file("word/document.xml");
+  if (!f) return buffer;
+  let xml = await f.async("string");
+  const anchor = /<w:drawing>\s*<wp:anchor\b[\s\S]*?<\/wp:anchor>\s*<\/w:drawing>/.exec(xml);
+  if (!anchor) return buffer;
+  const ext = /<wp:extent cx="(\d+)" cy="(\d+)"\/>/.exec(anchor[0]);
+  const graphic = /<a:graphic\b[\s\S]*<\/a:graphic>/.exec(anchor[0]);
+  const docPr = /<wp:docPr\b[^>]*\/>/.exec(anchor[0]);
+  if (!ext || !graphic) return buffer;
+  let cx = +ext[1];
+  let cy = +ext[2];
+  const maxCy = Math.round(altoMaxCm * 360000);
+  if (cy > maxCy) {
+    cx = Math.round((cx * maxCy) / cy);
+    cy = maxCy;
+  }
+  const graphicOk = graphic[0].replace(/<a:ext cx="\d+" cy="\d+"\/>/g, `<a:ext cx="${cx}" cy="${cy}"/>`);
+  const inline =
+    `<wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${cx}" cy="${cy}"/><wp:effectExtent l="0" t="0" r="0" b="0"/>` +
+    `${docPr ? docPr[0] : '<wp:docPr id="141" name="Montaje de Altus"/>'}<wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1"/></wp:cNvGraphicFramePr>${graphicOk}</wp:inline>`;
+  const drawing = `<w:drawing>${inline}</w:drawing>`;
+  const sect = /<w:sectPr>[\s\S]*?<\/w:sectPr>/.exec(xml);
+  const sectXml = sect ? sect[0] : "";
+  const bodyStart = xml.indexOf("<w:body>") + "<w:body>".length;
+  const head = xml.slice(0, bodyStart);
+  const tituloP =
+    `<w:p><w:pPr><w:pStyle w:val="Heading2"/><w:keepNext/><w:spacing w:before="0" w:after="120" w:line="240" w:lineRule="auto"/><w:ind w:right="137" w:firstLine="0"/></w:pPr>` +
+    `<w:r><w:t xml:space="preserve">MONTAJE DE ALTUS</w:t></w:r></w:p>`;
+  const imagenP = `<w:p><w:pPr><w:keepLines/><w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/><w:jc w:val="center"/>${sectXml}</w:pPr><w:r>${drawing}</w:r></w:p>`;
+  xml = head + tituloP + imagenP + "</w:body></w:document>";
+  zip.file("word/document.xml", xml, { createFolders: false });
+  return zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+}
+
+
+/**
+ * Lee los números de página del índice del PDF (LibreOffice calcula los campos PAGEREF al exportar).
+ * @returns {Promise<number[]|null>} un número por entrada del índice, en orden; null si no cuadra
+ */
+async function indicePaginas(pdfPath, nEntradas) {
+  const lib = await require("./pdfconv").load();
+  const doc = await lib.pdfjs.getDocument({ data: new Uint8Array(fs.readFileSync(pdfPath)), isEvalSupported: false, verbosity: 0 }).promise;
+  const nums = [];
+  try {
+    let vistoIndice = false;
+    for (let p = 1; p <= Math.min(doc.numPages, 8); p++) {
+      const page = await doc.getPage(p);
+      const tc = await page.getTextContent();
+      const filas = new Map();
+      for (const it of tc.items) {
+        if (!it.str) continue;
+        const y = Math.round(it.transform[5] / 3);
+        if (!filas.has(y)) filas.set(y, []);
+        filas.get(y).push(it);
+      }
+      const lineas = [...filas.entries()].sort((a, b) => b[0] - a[0]).map(([, its]) => its.sort((a, b) => a.transform[4] - b.transform[4]).map((i) => i.str).join(""));
+      const antes = nums.length;
+      for (const l of lineas) {
+        const m = /\.{4,}\s*(\d{1,4})\s*$/.exec(l);
+        if (m) nums.push(+m[1]);
+      }
+      if (nums.length > antes) vistoIndice = true;
+      else if (vistoIndice) break; // fin del índice
+      page.cleanup();
+    }
+  } finally {
+    await doc.destroy();
+  }
+  return nums.length === nEntradas ? nums : null;
+}
+
+/** Escribe los números de página reales en los campos PAGEREF del índice y quita el aviso «actualizar campos» */
+async function rellenaIndice(buffer, entries, nums) {
+  const zip = await JSZip.loadAsync(buffer);
+  let xml = await zip.file("word/document.xml").async("string");
+  entries.forEach((e, i) => {
+    const marca = `PAGEREF ${e.bookmark.name} \\h `;
+    const k = xml.indexOf(marca);
+    if (k < 0) return;
+    const t = xml.indexOf("<w:t>–</w:t>", k);
+    if (t < 0 || t - k > 600) return;
+    xml = xml.slice(0, t) + `<w:t>${nums[i]}</w:t>` + xml.slice(t + "<w:t>–</w:t>".length);
+  });
+  zip.file("word/document.xml", xml, { createFolders: false });
+  const sf = zip.file("word/settings.xml");
+  if (sf) zip.file("word/settings.xml", (await sf.async("string")).replace(/<w:updateFields w:val="true"\/>/, ""), { createFolders: false });
+  return zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+}
+
 const FONT = R.FONT;
 
 function indexXml(entries) {
@@ -177,6 +275,14 @@ function indexXml(entries) {
 }
 
 const normaliza = (s) => norm(s || "");
+
+/** «Bienvenidos!» → «¡Bienvenidos!»; «¿Qué tal?» se respeta (el Excel suele perder el signo de apertura) */
+function abreSignos(t) {
+  let x = String(t || "").trim();
+  if (x && /!\s*$/.test(x) && !/¡/.test(x)) x = "¡" + x;
+  if (x && /\?\s*$/.test(x) && !/¿/.test(x)) x = "¿" + x;
+  return x;
+}
 
 /** ¿La hoja es de este planning? (los plannings por nivel solo llevan la hoja de su nivel) */
 function hojaDelPlanning(planning, niveles, todasLasHojas, warn = () => {}) {
@@ -284,7 +390,7 @@ async function buildPlanning(session, model, planning, onWarn) {
       r.avisos.forEach((m) => warn(`«${doc.nombre}»: ${m}`));
       let primero = true;
       for (const g of r.groups) {
-        const xml = (primero ? R.anchor(bm) : "") + emitGroup(g, b);
+        const xml = (primero ? R.anchor(bm) : "") + b.normalizaFuentes(emitGroup(g, b));
         b.addGenerated(xml, { landscape: g.landscape, margins: g.margins });
         primero = false;
       }
@@ -379,6 +485,7 @@ async function buildPlanning(session, model, planning, onWarn) {
         if (r.found) buf = r.buffer;
         else warn("No se encontró el nombre de la enfermera en «Consejos y normas»; revísalo a mano.");
       }
+      if (bl.id === "altus") buf = await adaptAltus(buf);
       if (bl.id === "telefonos" && logoBuf) {
         const r = await replaceImageInDocx(buf, "image103.png", logoBuf);
         if (r.found) buf = r.buffer;
@@ -430,9 +537,157 @@ async function buildPlanning(session, model, planning, onWarn) {
       log.push({ type: tipo, landscape: true, docId: d.id, categoria: d.categoria });
     }
   };
-  await tablaGrupos(fuentes("grupos_nivel", "grupos_nivel"), "TIENDAS", "grupos_nivel");
-  await tablaGrupos(fuentes("grupos_trabajo", "grupos_trabajo"), "GRUPOS DE TRABAJO", "grupos_trabajo");
-  await tablaGrupos(fuentes("servicio", "servicio"), "DISTRIBUCIÓN Y SERVICIOS DE LOS GRUPOS DE TRABAJO EN EL COMEDOR", "servicio");
+  // Abre las hojas candidatas de una lista de fuentes (Excel sueltos u hojas de la Base de Datos CSP)
+  const hojasDe = async (lista) => {
+    const out = []; // {doc, buf, wb, nombres}
+    for (const { doc: d, hojas } of lista) {
+      if (d.ext !== ".xlsx") {
+        out.push({ doc: d, docx: true });
+        continue;
+      }
+      const buf = await readDoc(d);
+      const wb = await loadWorkbook(buf);
+      const todas = wb.worksheets.map((w) => w.name);
+      const candidatas = hojas ? todas.filter((n) => hojas.includes(n)) : todas;
+      const porNivel = hojaDelPlanning(planning, niveles, candidatas, warn);
+      out.push({ doc: d, buf, wb, nombres: candidatas.filter((n) => porNivel(n)) });
+    }
+    return out;
+  };
+  const MARGEN_APAISADO = (o) => ({ header: 511, footer: 960, ...o });
+
+  // TIENDAS y ENFERMERÍA: una tabla por hoja y por página (Pequeños → Medianos → Mayores)
+  const tiendasConocidas = []; // para ordenar los grupos de trabajo por nivel
+  const bloqueTiendas = async (lista, etiqueta, tipo, indice = true) => {
+    const fuentesAbiertas = await hojasDe(lista);
+    const paginas = [];
+    const sueltas = [];
+    for (const f of fuentesAbiertas) {
+      if (f.docx) {
+        await addDoc(f.doc, { title: etiqueta, level: 1, type: tipo });
+        continue;
+      }
+      for (const nombre of f.nombres) {
+        const h = T.parseTiendasHoja(f.wb.getWorksheet(nombre));
+        if (h) paginas.push({ ...h, doc: f.doc, hoja: nombre });
+        else sueltas.push({ f, nombre });
+      }
+    }
+    // orden Pequeños (rango 3) → Medianos (2) → Mayores (1) → otras hojas
+    paginas.sort((a, b) => (T.NIVELES[b.nivel] ? T.NIVELES[b.nivel].rank : 0) - (T.NIVELES[a.nivel] ? T.NIVELES[a.nivel].rank : 0));
+    let primera = true;
+    for (const h of paginas) {
+      const bm = primera ? b.nextBookmark() : null;
+      const t = T.tiendasTablaXml(h, { altoUtil: 9400 });
+      if (!t.cabe) warn(`${etiqueta} · ${h.titulo}: la tabla no cabe en una página aunque se reduce la letra a ${t.size} pt; revísala.`);
+      b.addGenerated((bm ? R.anchor(bm) : "") + t.xml, { landscape: true, margins: MARGEN_APAISADO({ top: 1134, right: 765, bottom: 1200, left: 765 }) });
+      if (primera && indice) entries.push({ title: etiqueta, level: 1, bookmark: bm });
+      primera = false;
+      log.push({ type: tipo, landscape: true, docId: h.doc.id, categoria: h.doc.categoria, nivel: h.nivel, filas: h.bloques.reduce((n, x) => n + x.filas.length, 0), tam: t.size, cabe: t.cabe });
+      if (tipo === "grupos_nivel")
+        for (const bl of h.bloques) for (const f of bl.filas) tiendasConocidas.push([T.claveNombre(`${f.nombre} ${f.apellidos}`), h.nivel]);
+    }
+    for (const { f, nombre } of sueltas) {
+      // hoja con otra estructura: se pinta tal cual
+      const { xml, warnings, sheets } = await R.sheetsToXml(f.buf, { landscape: true, pageBreaks: true, sheetFilter: (n) => n === nombre });
+      warnings.forEach(warn);
+      if (!sheets.length) continue;
+      const bm = primera ? b.nextBookmark() : null;
+      b.addGenerated((bm ? R.anchor(bm) : "") + xml, { landscape: true });
+      if (primera && indice) entries.push({ title: etiqueta, level: 1, bookmark: bm });
+      primera = false;
+      log.push({ type: tipo, landscape: true, docId: f.doc.id, categoria: f.doc.categoria });
+    }
+    if (!paginas.length && !sueltas.length && !fuentesAbiertas.some((x) => x.docx)) warn(`No hay ninguna hoja de «${etiqueta}» para ${planning.nombre}; no se incluye.`);
+  };
+  await bloqueTiendas(fuentes("grupos_nivel", "grupos_nivel"), "TIENDAS", "grupos_nivel");
+
+  // GRUPOS DE TRABAJO: una página, 12 columnas
+  let nGruposTrabajo = 0;
+  {
+    const abiertas = await hojasDe(fuentes("grupos_trabajo", "grupos_trabajo"));
+    const nivelPorNombre = new Map(tiendasConocidas);
+    let hecho = false;
+    for (const f of abiertas) {
+      if (f.docx) {
+        await addDoc(f.doc, { title: "GRUPOS DE TRABAJO", level: 1, type: "grupos_trabajo" });
+        hecho = true;
+        continue;
+      }
+      let datos = null;
+      for (const nombre of f.nombres) {
+        datos = T.parseGruposTrabajoHoja(f.wb.getWorksheet(nombre));
+        if (datos && datos.grupos.some((g) => g.filas.length)) {
+          datos.hoja = nombre;
+          break;
+        }
+        datos = null;
+      }
+      if (!datos) {
+        const { xml, warnings, sheets } = await R.sheetsToXml(f.buf, { landscape: true, pageBreaks: true, sheetFilter: (n) => f.nombres.includes(n) });
+        warnings.forEach(warn);
+        if (sheets.length) {
+          warn(`«${f.doc.nombre}»: no se reconoce la estructura de grupos de trabajo (cabeceras «GRUPO n»); se incluye la hoja tal cual.`);
+          const bm = b.nextBookmark();
+          b.addGenerated(R.anchor(bm) + xml, { landscape: true });
+          entries.push({ title: "GRUPOS DE TRABAJO", level: 1, bookmark: bm });
+          log.push({ type: "grupos_trabajo", landscape: true, docId: f.doc.id, categoria: f.doc.categoria });
+          hecho = true;
+        }
+        continue;
+      }
+      const g = T.gruposTrabajoXml(datos, { anio: cfg.anio, nivelPorNombre });
+      nGruposTrabajo = datos.grupos.length;
+      const bm = b.nextBookmark();
+      b.addGenerated(R.anchor(bm) + g.xml, { landscape: true, margins: MARGEN_APAISADO({ top: 850, right: 567, bottom: 1200, left: 567 }) });
+      entries.push({ title: "GRUPOS DE TRABAJO", level: 1, bookmark: bm });
+      log.push({ type: "grupos_trabajo", landscape: true, docId: f.doc.id, categoria: f.doc.categoria, grupos: g.grupos, filas: g.filas, cabe: g.alto <= 9400 });
+      if (g.alto > 9400) warn(`GRUPOS DE TRABAJO: la tabla (${g.filas} filas por grupo) puede no caber en una página; revísala.`);
+      hecho = true;
+    }
+    if (!hecho) warn(`No hay hoja de «Grupos de trabajo» para ${planning.nombre}; no se incluye.`);
+  }
+
+  // DISTRIBUCIÓN Y SERVICIOS DE LOS GRUPOS DE TRABAJO EN EL COMEDOR (rotación o hoja subida)
+  {
+    const normales = model.dias.filter((d) => d.kind !== "lluvia");
+    let filas = null;
+    for (const f of await hojasDe(fuentes("servicio", "servicio"))) {
+      if (f.docx) continue;
+      for (const nombre of f.nombres) {
+        filas = T.parseServicioHoja(f.wb.getWorksheet(nombre));
+        if (filas) break;
+      }
+      if (filas) break;
+    }
+    if (!filas && normales.length) {
+      const hayMarcha = (d) => d.day.rows.some((r) => r.cells.some((c) => !c.covered && c.lines.some((l) => norm(l.text) === "marcha")));
+      const marcha = normales.find(hayMarcha);
+      filas = T.comedorFilas(normales.map((d) => d.label), marcha ? marcha.label : null, nGruposTrabajo || 6);
+      warn(
+        `Distribución del comedor: los servicios rotan en el orden Comedor → Fregado 1 → Extra → Oración → Fregado 2 → Batida; ` +
+          `los días se agrupan así (${filas.map((f) => f.etiqueta + (f.gris ? " [sin servicio]" : "")).join(" · ")}). Revisa las etiquetas de los días y el día sin servicio${marcha ? "" : " (no se ha encontrado un día de «MARCHA»)"}.`
+      );
+    }
+    if (filas && filas.length) {
+      const nG = Math.max(1, ...filas.map((f) => f.servicios.length)) || 6;
+      // la tabla y el plano deben caber en una página: con muchos días las filas bajan de 428 a 340 twips
+      const rowH = Math.max(340, Math.min(428, Math.floor((9300 - 620 - 3855 - 450) / (filas.length + 1))));
+      const c = T.comedorXml(filas, nG, { rowH });
+      let plano = "";
+      try {
+        const buf = await fs.promises.readFile(path.join(BASE_DIR, "plano-comedor.jpg"));
+        const rid = b.registerImage(buf, "jpg");
+        plano = para(b.imageXml(rid, 4500000, 2448000, "Plano del comedor"), { align: "center", before: 450, after: 0 });
+      } catch (_) {
+        warn("Falta el plano del comedor en el servidor; la distribución del comedor sale sin plano.");
+      }
+      const bm = b.nextBookmark();
+      b.addGenerated(R.anchor(bm) + c.cajaXml + para("", { after: 0, lineExact: 220 }) + c.tablaXml + plano, { landscape: true, margins: MARGEN_APAISADO({ top: 1134, right: 906, bottom: 1200, left: 1417 }) });
+      entries.push({ title: "DISTRIBUCIÓN Y SERVICIOS DE LOS GRUPOS DE TRABAJO EN EL COMEDOR", level: 1, bookmark: bm });
+      log.push({ type: "servicio", landscape: true, filas: filas.length });
+    }
+  }
 
   // otras tablas generales y documentos generales
   for (const t of tablasExtra) {
@@ -461,13 +716,27 @@ async function buildPlanning(session, model, planning, onWarn) {
 
   // — Días —
   let ordinal = 0;
+  let lluviaN = 0;
   for (const dm of model.dias) {
     const bm = b.nextBookmark();
     if (dm.kind !== "lluvia") ordinal++;
     const dia = R.withExtraLines(dm.day, lineasExtraDia(dm));
     const meta = {};
-    b.addGenerated(R.anchor(bm) + R.dayTableXml(dia, { ordinal, meta }), { landscape: true });
-    entries.push({ title: dm.kind === "lluvia" ? dm.titulo.replace(/^DÍA DE LLUVIA/, "DÍA DE LLUVIA") : `${dm.label}: ${dm.day.title || ""}`.trim().replace(/:$/, ""), level: 1, bookmark: bm });
+    const lluvia = dm.kind === "lluvia";
+    if (lluvia) lluviaN++;
+    const tituloDia = abreSignos(dm.day.title || "");
+    const banos = (dm.servicios || []).find((x) => /^banos$/.test(norm(x.task)) && x.names && x.names.length);
+    const tablaDia = T.diaDobleXml(R.daysGrid([dia]).grid, {
+      numero: lluvia ? String(lluviaN).padStart(2, "0") : String(ordinal),
+      codigo: dm.label,
+      titulo: tituloDia,
+      lluvia,
+      banos: banos ? { names: banos.names } : null,
+      esLlegada: !lluvia && ordinal === 1,
+      meta,
+    });
+    b.addGenerated(R.anchor(bm) + tablaDia, { landscape: true, margins: { top: 1134, right: 765, bottom: 1200, left: 765, header: 511, footer: 960 } });
+    entries.push({ title: lluvia ? dm.titulo.replace(/^DÍA DE LLUVIA/, "DÍA DE LLUVIA") : `${dm.label}: ${tituloDia}`.trim().replace(/:$/, ""), level: 1, bookmark: bm });
     log.push({ type: "horario", day: dm.label, landscape: true, meta, conResp: Array.from(lineasExtraDia(dm).values()).flat().filter((l) => l.runs && /^Resp/.test(l.runs[0].text)).length });
     const byId = (id) => model.docsAll.find((d) => d.id === id);
     for (const id of dm.oracionDia) {
@@ -491,7 +760,7 @@ async function buildPlanning(session, model, planning, onWarn) {
   }
 
   // — Hojas de la Base de Datos solo para algunos plannings: enfermería y coches/autobuses —
-  await tablaGrupos(hojasBase("enfermeria"), "ENFERMERÍA", "enfermeria");
+  await bloqueTiendas(hojasBase("enfermeria"), "ENFERMERÍA", "enfermeria");
   await tablaGrupos(hojasBase("transporte"), "COCHES Y AUTOBUSES", "transporte");
 
   // — Documentos específicos de este planning (alergias aparte, menú) —
@@ -547,17 +816,53 @@ async function buildPlanning(session, model, planning, onWarn) {
 
 // ───────────────────────── Comprobaciones previas a la entrega ─────────────────────────
 
+/**
+ * Comprueba que un XML está bien formado (etiquetas abiertas y cerradas en orden) recorriéndolo
+ * una sola vez, sin construir el árbol: en el servidor (512 MB) un árbol DOM del documento
+ * completo podía llevarse casi toda la memoria. Devuelve null si está bien, o el motivo.
+ */
+function bienFormado(xml) {
+  const pila = [];
+  const tag = /<(\/?)([A-Za-z_][\w:.-]*)((?:\s+[\w:.-]+\s*=\s*(?:"[^"]*"|'[^']*'))*)\s*(\/?)>/y;
+  let i = xml.indexOf("<");
+  while (i >= 0) {
+    if (xml.startsWith("<?", i)) {
+      const j = xml.indexOf("?>", i);
+      if (j < 0) return "instrucción sin cerrar";
+      i = xml.indexOf("<", j + 2);
+      continue;
+    }
+    if (xml.startsWith("<!--", i)) {
+      const j = xml.indexOf("-->", i);
+      if (j < 0) return "comentario sin cerrar";
+      i = xml.indexOf("<", j + 3);
+      continue;
+    }
+    tag.lastIndex = i;
+    const m = tag.exec(xml);
+    if (!m) return `etiqueta mal formada cerca de la posición ${i}`;
+    if (m[1]) {
+      if (pila.pop() !== m[2]) return `la etiqueta </${m[2]}> no coincide con la que se abrió`;
+    } else if (!m[4]) pila.push(m[2]);
+    i = xml.indexOf("<", tag.lastIndex);
+  }
+  return pila.length ? `quedan etiquetas sin cerrar (<${pila[pila.length - 1]}>)` : null;
+}
+
 async function verify(planning, model, built) {
   const checks = [];
   const add = (nombre, ok, detalle = "") => checks.push({ n: checks.length + 1, nombre, ok: !!ok, detalle });
   let xml = "";
   let stylesXml = "";
   let validDoc = false;
+  let numberingXml = "";
   try {
     const zip = await JSZip.loadAsync(built.buffer);
     xml = await zip.file("word/document.xml").async("string");
     stylesXml = await zip.file("word/styles.xml").async("string");
-    parseXml(xml);
+    numberingXml = zip.file("word/numbering.xml") ? await zip.file("word/numbering.xml").async("string") : "";
+    const fallo = bienFormado(xml);
+    if (fallo) throw new Error(fallo);
     validDoc = true;
   } catch (e) {
     add("El documento Word es válido y se puede abrir", false, e.message);
@@ -575,6 +880,60 @@ async function verify(planning, model, built) {
   add("Turnos, grupos, planning general y días están en páginas apaisadas", apaisadas >= esperadas && esperadas > 0, `${apaisadas} secciones apaisadas (se esperaban al menos ${esperadas})`);
 
   add("El texto base es Calibri 11 (como el planning de referencia)", /<w:docDefaults>[\s\S]*Calibri[\s\S]*<w:sz w:val="22"\/>/.test(stylesXml));
+
+  // fuentes del cuerpo: ninguna de las que traían los documentos originales
+  {
+    const intrusas = ["Montserrat", "Play", "Verdana", "Sim Hei", "SimHei", "Times New Roman", "Courier New"].filter((f) => new RegExp(`w:(ascii|hAnsi|cs|eastAsia)="${f}"`).test(xml + stylesXml + numberingXml));
+    add("Todo el cuerpo está en Calibri Light 11 (sin Montserrat, Play, Verdana ni otras fuentes sueltas)", !intrusas.length, intrusas.length ? `Quedan: ${intrusas.join(", ")}` : "");
+  }
+
+  // tablas de material: ancho = ancho útil de su sección. Se recorre el XML por posiciones
+  // (sin trocearlo ni copiarlo) para no gastar memoria en el servidor
+  if (validDoc) {
+    const reSect = /<w:sectPr[ >][\s\S]*?<\/w:sectPr>/g;
+    let n = 0;
+    const mal = [];
+    let desde = 0;
+    let m;
+    while ((m = reSect.exec(xml))) {
+      const sp = m[0];
+      const hasta = m.index;
+      const pgW = /<w:pgSz[^>]*w:w="(\d+)"/.exec(sp);
+      const iz = /<w:pgMar[^>]*w:left="(\d+)"/.exec(sp);
+      const de = /<w:pgMar[^>]*w:right="(\d+)"/.exec(sp);
+      if (pgW && iz && de) {
+        const util = +pgW[1] - +iz[1] - +de[1];
+        let pos = xml.indexOf("<w:tbl>", desde);
+        while (pos >= 0 && pos < hasta) {
+          const cab0 = xml.slice(pos, pos + 12000);
+          const finTabla = cab0.indexOf("</w:tbl>");
+          const cab = finTabla > 0 ? cab0.slice(0, finTabla) : cab0;
+          const finGrid = cab.indexOf("</w:tblGrid>");
+          let cuarta = -1;
+          for (let k = 0, q = finGrid; k < 4 && q >= 0; k++) q = cuarta = cab.indexOf("<w:tr", q + 1) >= 0 ? cab.indexOf("<w:tr", q + 1) : -1;
+          const texto = (cab.slice(finGrid, cuarta > 0 ? cuarta : cab.length).match(/<w:t(?: [^>]*)?>[^<]*/g) || []).map((x) => x.replace(/<w:t(?: [^>]*)?>/, "")).join(" ");
+          if (finGrid > 0 && /material\s+(no\s+)?fungible|recursos\s+materiales/i.test(texto)) {
+            n++;
+            const grid = (cab.slice(0, finGrid).split("<w:tblGridChange")[0].match(/<w:gridCol w:w="(\d+)"/g) || []).reduce((a, g) => a + parseInt(g.replace(/\D/g, ""), 10), 0);
+            if (Math.abs(grid - util) > 80) mal.push(`${(grid / 567).toFixed(1)} cm en vez de ${(util / 567).toFixed(1)} cm`);
+          }
+          pos = xml.indexOf("<w:tbl>", pos + 7);
+        }
+      }
+      desde = m.index + sp.length;
+    }
+    add("Las tablas de material ocupan todo el ancho útil de la página", mal.length === 0, mal.length ? `${mal.length} de ${n}: ${mal.slice(0, 3).join("; ")}` : `${n} tablas`);
+  }
+
+  // tiendas: una tabla por página, Pequeños → Medianos → Mayores, sin tabla de «grupos de nivel» completo
+  {
+    const tiendas = built.log.filter((l) => l.type === "grupos_nivel" && l.nivel);
+    if (tiendas.length) {
+      const rank = { pequenos: 1, medianos: 2, mayores: 3 };
+      const ord = tiendas.map((t) => rank[t.nivel] || 9);
+      add("Tiendas: una tabla por página en el orden Pequeños → Medianos → Mayores", ord.every((r, i) => i === 0 || r >= ord[i - 1]) && tiendas.every((t) => t.cabe), tiendas.map((t) => `${t.nivel || "otra"} (${t.filas} filas, ${t.tam} pt)`).join(" · "));
+    }
+  }
 
   const diasLog = built.log.filter((l) => l.type === "horario").map((l) => l.day);
   const diasModelo = model.dias.map((d) => d.label);
@@ -715,6 +1074,16 @@ async function generate(session, progress = () => {}) {
           progress({ fase: "pdf", planning: planning.nombre, n: i, total: seleccion.length });
           const r = await toPdf(docxPath, outDir);
           if (r.ok) {
+            // el PDF de LibreOffice trae la paginación real: se copia al índice del Word
+            try {
+              const nums = await indicePaginas(r.path, built.entries.length);
+              if (nums) {
+                fs.writeFileSync(docxPath, await rellenaIndice(built.buffer, built.entries, nums), { mode: 0o600 });
+                entry.checks.push({ n: entry.checks.length + 1, nombre: "El índice lleva los números de página reales", ok: true });
+              } else entry.avisos.push("No se han podido leer los números de página del índice en el PDF; en Word pulsa F9 sobre el índice (o acepta «actualizar campos»).");
+            } catch (e) {
+              entry.avisos.push(`No se han podido escribir los números de página en el índice: ${e.message}`);
+            }
             archivos.push({ nombre: `${base}.pdf`, ruta: r.path });
             entry.pdf = `${base}.pdf`;
             try {
