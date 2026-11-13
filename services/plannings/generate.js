@@ -15,7 +15,8 @@ const { FONT_LIGHT } = R;
 const { analyze, paraPlanning } = require("./analysis");
 const { norm } = require("./textutil");
 const { imageSize } = require("./images");
-const { renderPdfToDir } = require("./pdfpages");
+const { emitGroup } = require("./pdflayout");
+const { convertPdfIsolated, stopConverter } = require("./pdfclient");
 const BD = require("./bd");
 const BDX = require("./basedatos");
 const { loadWorkbook } = require("./xlsxReader");
@@ -23,9 +24,6 @@ const { loadWorkbook } = require("./xlsxReader");
 const BASE_DIR = path.join(__dirname, "..", "..", "assets", "plannings", "base");
 
 // Márgenes de las páginas que son un PDF incrustado como imagen (más estrechos para que el PDF se vea lo más grande posible)
-const PAGE_W = 11906;
-const PAGE_H = 16838;
-const PDF_MARGINS = { top: 820, right: 567, bottom: 800, left: 567, header: 400, footer: 480 };
 
 const MOTTO_DEFECTO = "¡¡CAMPAMENTO SANTA PAULA, QUE ALEGRÍA QUE GOZADA Y QUE BIEN NOS LO VAMOS A PASAR, AUNQUE HAYA QUE CURRAR!!";
 
@@ -245,17 +243,17 @@ function lineasExtraDia(dm) {
   return extra;
 }
 
-// ───────────────────────── PDF → páginas (con caché por sesión) ─────────────────────────
+// ───────────────────────── PDF → contenido editable (con caché por sesión) ─────────────────────────
 
-/** Páginas de un PDF (subido o de la biblioteca) como JPEG; se renderiza una sola vez por generación */
-async function pdfPagesOf(session, doc) {
-  const cache = session.pdfPages || (session.pdfPages = new Map());
+/** Contenido de un PDF (subido o de la biblioteca) reconstruido como párrafos, tablas e imágenes; se convierte una sola vez por generación */
+async function pdfConvOf(session, doc) {
+  const cache = session.pdfConv || (session.pdfConv = new Map());
   if (!cache.has(doc.id)) {
     cache.set(
       doc.id,
       (async () => {
         const buf = doc.origen === "bd" ? await BD.fetchPdf(doc.bd) : await fs.promises.readFile(doc.path);
-        return renderPdfToDir(buf, path.join(session.dir, "pdfpages"), doc.id.replace(/[^a-z0-9]/gi, ""));
+        return convertPdfIsolated(buf, path.join(session.dir, "pdfconv"));
       })()
     );
   }
@@ -278,33 +276,20 @@ async function buildPlanning(session, model, planning, onWarn) {
 
   const readDoc = (d) => fs.promises.readFile(d.path);
 
-  // Páginas de un PDF como imágenes, repartidas en secciones según su orientación
+  // PDF → texto, tablas e imágenes editables, en secciones según su orientación
   const addPdf = async (doc, { title, level = 2, type, day = null, special = null, noIndex = false }) => {
     const bm = b.nextBookmark();
     try {
-      const r = await pdfPagesOf(session, doc);
-      if (r.truncated) warn(`«${doc.nombre}» tiene ${r.total} páginas: se incluyen solo las primeras ${r.pages.length}.`);
-      const grupos = [];
-      for (const pg of r.pages) {
-        const last = grupos[grupos.length - 1];
-        if (last && last.landscape === pg.landscape) last.pages.push(pg);
-        else grupos.push({ landscape: pg.landscape, pages: [pg] });
-      }
+      const r = await pdfConvOf(session, doc);
+      r.avisos.forEach((m) => warn(`«${doc.nombre}»: ${m}`));
       let primero = true;
-      for (const g of grupos) {
-        const availW = (g.landscape ? PAGE_H : PAGE_W) - PDF_MARGINS.left - PDF_MARGINS.right;
-        const availH = (g.landscape ? PAGE_W : PAGE_H) - PDF_MARGINS.top - PDF_MARGINS.bottom - 200;
-        let xml = primero ? R.anchor(bm) : "";
-        g.pages.forEach((pg, i) => {
-          const k = Math.min((availW * 635) / pg.w, (availH * 635) / pg.h);
-          const rid = b.registerImage(fs.readFileSync(pg.file), "jpg");
-          xml += para(b.imageXml(rid, Math.round(pg.w * k), Math.round(pg.h * k), `${doc.nombre} (página ${i + 1})`), { align: "center", before: 0, after: 0, line: 240, pageBreakBefore: i > 0 });
-        });
-        b.addGenerated(xml, { landscape: g.landscape, margins: PDF_MARGINS });
+      for (const g of r.groups) {
+        const xml = (primero ? R.anchor(bm) : "") + emitGroup(g, b);
+        b.addGenerated(xml, { landscape: g.landscape, margins: g.margins });
         primero = false;
       }
       if (!noIndex) entries.push({ title, level, bookmark: bm });
-      log.push({ type, day, docId: doc.id, categoria: doc.categoria, special, titulo: title, pdf: true, paginas: r.pages.length });
+      log.push({ type, day, docId: doc.id, categoria: doc.categoria, special, titulo: title, pdf: true, paginas: r.pages });
       return true;
     } catch (e) {
       errores.push(`No se pudo incluir "${title}" (${doc.nombre}${doc.origen === "bd" ? ", de la biblioteca de la app" : ""}): ${e.message}`);
@@ -684,7 +669,7 @@ async function generate(session, progress = () => {}) {
   const outDir = path.join(session.dir, "out");
   fs.rmSync(outDir, { recursive: true, force: true });
   fs.mkdirSync(outDir, { recursive: true, mode: 0o700 });
-  session.pdfPages = new Map();
+  session.pdfConv = new Map();
 
   const pdfOk = pdfDisponible();
   const pendientes = review.incidencias.filter((i) => i.nivel === "critica").map((i) => i.mensaje);
@@ -704,11 +689,12 @@ async function generate(session, progress = () => {}) {
     for (const d of pdfs) {
       progress({ fase: "preparando documentos PDF", planning: d.nombre, n: ++k, total: pdfs.length });
       try {
-        await pdfPagesOf(session, d);
+        await pdfConvOf(session, d);
       } catch (_) {
         /* el error se anota al incluir el documento */
       }
     }
+    stopConverter(); // devuelve la memoria del conversor antes de ensamblar los plannings
 
     let i = 0;
     for (const planning of seleccion) {
@@ -749,8 +735,9 @@ async function generate(session, progress = () => {}) {
     }
   } finally {
     // las páginas de los PDF ya están dentro de los Word
-    fs.rmSync(path.join(session.dir, "pdfpages"), { recursive: true, force: true });
-    session.pdfPages = null;
+    session.pdfConv = null;
+    stopConverter();
+    fs.rmSync(path.join(session.dir, "pdfconv"), { recursive: true, force: true });
   }
   if (!pdfOk) {
     informe.avisoPdf = "Este servidor no tiene LibreOffice, así que solo se han generado los DOCX. Abre cada DOCX en Word y usa Archivo → Exportar → PDF (así también se actualizan los números de página del índice).";
