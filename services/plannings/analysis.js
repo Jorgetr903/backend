@@ -11,6 +11,7 @@ const { matchItem, cleanActivityText, tier: confTier } = require("./matcher");
 const { parseOracionText, detectLevel } = require("./classify");
 const { norm } = require("./textutil");
 const BDX = require("./basedatos");
+const { parseContactos } = require("./contactos");
 
 // ───────────────────────── Catálogo ─────────────────────────
 
@@ -250,7 +251,21 @@ async function analyze(session) {
   if (principal.length > 1) inc("critica", "varias_principal", "Hay más de una tabla principal; marca cuál sobra como 'excluir'. Mientras tanto se usa la primera.", { categoria: "general" });
   if (!turnosDocs.length) inc("critica", "falta_turnos", "Falta la tabla de turnos (Excel con los monitores y sus tareas por día).", { categoria: "general" });
   const contactosDocs = general.filter((d) => d.rolDetectado === "contactos" && !d.excluir);
-  if (!contactosDocs.length) inc("critica", "falta_contactos", "Falta la tabla con los nombres, correos y teléfonos de todos los monitores (va en la portada, antes del índice).", { categoria: "general" });
+  // Contactos de los monitores: no bloquea la generación. Sin archivo, la portada sale sin la tabla de contactos
+  const contactos = { docs: contactosDocs.map((d) => d.id), filas: [], avisos: [], error: null };
+  if (!contactosDocs.length) inc("aviso", "falta_contactos", "No has indicado el archivo con los nombres, correos y teléfonos de los monitores: la portada saldrá sin la tabla de contactos. Si lo tienes, súbelo en «Información general» y márcalo como «Contactos de monitores».", { categoria: "general" });
+  for (const d of contactosDocs) {
+    if (d.ext !== ".xlsx") {
+      contactos.error = `«${d.nombre}» está marcado como contactos de monitores pero no es un Excel (.xlsx); sube los contactos en formato Excel con columnas de nombre, correo y teléfono.`;
+      continue;
+    }
+    if (!d._ct) d._ct = await parseContactos(await readBuf(d), `«${d.nombre}»`);
+    contactos.filas.push(...d._ct.filas);
+    contactos.avisos.push(...d._ct.avisos);
+    if (d._ct.error) contactos.error = d._ct.error;
+  }
+  if (contactos.error && !contactos.filas.length) inc("aviso", "contactos_ilegibles", `${contactos.error} La generación continúa, pero la portada saldrá sin la tabla de contactos.`, { categoria: "general" });
+  else if (contactos.avisos.length) inc("aviso", "contactos_dudosos", `Contactos de monitores: ${contactos.avisos.slice(0, 4).join(" ")}${contactos.avisos.length > 4 ? ` (y ${contactos.avisos.length - 4} avisos más)` : ""}`, { categoria: "general" });
   if (turnosDocs.length > 1) inc("critica", "varias_turnos", "Hay más de una tabla de turnos; marca cuál sobra como 'excluir'. Mientras tanto se usa la primera.", { categoria: "general" });
 
   // Base de Datos CSP: roles de cada hoja
@@ -454,6 +469,11 @@ async function analyze(session) {
           (night ? dayModel.oracionNoche : dayModel.oracionDia).push(...entry.docIds);
         } else if (it.type === "oracion_monitores") {
           entry.doc = { confianza: "no_necesita", nombre: null };
+        } else if (it.type === "fijo") {
+          // documento fijo del planning original (se reutiliza tal cual): no hay que elegir nada
+          entry.fijo = it.fijo;
+          entry.doc = { confianza: "no_necesita", nombre: null, motivo: "Documento fijo: Preparación del macuto para la marcha" };
+          dayModel.fijos = (dayModel.fijos || []).concat(it.fijo);
         } else if (it.special && firstSeen[it.special]) {
           // Olimpiadas y Tiempo libre dirigido (TL y TL dirigido, con o sin quiosco/torneos) solo se
           // desarrollan el primer día en que aparecen; en el resto solo salen en el horario
@@ -499,6 +519,28 @@ async function analyze(session) {
           });
         }
         dayModel.items.push(entry);
+      }
+      // Oraciones de este día (mañana o noche) que no han encontrado su línea en el horario
+      // (p. ej. «ORACIÓN MONITORES» en vez de «ORACIÓN»): se incorporan igualmente en su sitio —la
+      // de la mañana al empezar el día y la de la noche al final— para que no se pierda ninguna.
+      for (const o of oraciones) {
+        if (o.dia !== day.label || usedOra.has(o.docId)) continue;
+        const noche = !!o.noche;
+        usedOra.add(o.docId);
+        (noche ? dayModel.oracionNoche : dayModel.oracionDia).push(o.docId);
+        dayModel.items.push({
+          key: `${day.label}|extra|${noche ? "noche" : "dia"}|${o.docId}`,
+          hora: null,
+          texto: noche ? "Oración de la noche" : "Oración de la mañana",
+          tipo: noche ? "oracion_noche" : "oracion_dia",
+          especial: null,
+          docIds: [o.docId],
+          doc: { confianza: "clara", nombre: o.nombre, motivo: "El horario no tiene una línea exacta de oración; se ha colocado igualmente" },
+          responsables: null,
+          repetido: false,
+          sinLinea: true,
+        });
+        inc("aviso", "oracion_sin_linea", `${day.label}: la oración de la ${noche ? "noche" : "mañana"} "${o.nombre}" no tiene una línea «ORACIÓN» en el horario de ese día; se incorpora igualmente ${noche ? "al final" : "al principio"} del día.`, { docId: o.docId, dia: day.label });
       }
       dias.push(dayModel);
     }
@@ -720,7 +762,8 @@ async function analyze(session) {
     review,
     model: {
       anio: cfg.anio,
-      hayContactos: contactosDocs.length > 0,
+      hayContactos: contactos.filas.length > 0,
+      contactos,
       dias,
       plannings,
       seleccionados,

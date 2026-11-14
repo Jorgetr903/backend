@@ -21,6 +21,8 @@ const BD = require("./bd");
 const BDX = require("./basedatos");
 const { loadWorkbook } = require("./xlsxReader");
 const T = require("./tablas");
+const V = require("./validaciones");
+const { parseOracionText } = require("./classify");
 
 const BASE_DIR = path.join(__dirname, "..", "..", "assets", "plannings", "base");
 
@@ -45,6 +47,12 @@ const BLOQUES = [
   { id: "altus", archivo: "montaje-de-altus.docx", titulo: "Montaje de Altus", indice: "MONTAJE DE ALTUS" },
   { id: "formacion", archivo: "formacion-dinamicas-oraciones.docx", titulo: "Formación: dinámicas y oraciones", indice: "FORMACIÓN DINÁMICAS/ORACIONES" },
 ];
+
+/** Documentos fijos del planning original que se reutilizan tal cual (no se rehacen ni se resumen) */
+const FIJOS_ASOCIADOS = {
+  macuto: { archivo: "preparacion-macuto.docx", titulo: "Preparación del macuto para la marcha", motivo: "línea «Preparación macuto marcha larga» del horario" },
+  evaluacion: { archivo: "anexo-evaluacion.docx", titulo: "ANEXO EVALUACIÓN", motivo: "antes de los días de lluvia" },
+};
 
 function catalogoBloques() {
   return BLOQUES.map((b) => ({
@@ -417,6 +425,23 @@ async function buildPlanning(session, model, planning, onWarn) {
     }
   };
 
+  // Documentos fijos asociados a una actividad o a un lugar (macuto, anexo de evaluación): una sola vez cada uno
+  const fijosPuestos = new Set();
+  const addFijo = async (id, { title, level = 2, day = null, noIndex = false } = {}) => {
+    const f = FIJOS_ASOCIADOS[id];
+    if (!f) return false;
+    if (fijosPuestos.has(id)) return false; // no se duplica
+    let buf;
+    try {
+      buf = await readBase(f.archivo);
+    } catch (_) {
+      errores.push(`No se ha encontrado el documento fijo «${f.titulo}» (${f.archivo}) en ${BASE_DIR}; no se ha generado ninguna versión aproximada.`);
+      return false;
+    }
+    fijosPuestos.add(id);
+    return addDoc(null, { title: title || f.titulo, level, type: "fijo", day, special: id, buffer: buf, noIndex });
+  };
+
   // Logo del año (subido como imagen) → portada/índice y bloque de teléfonos
   const logoDoc = model.docsAll.find((d) => d.categoria === "logo" && !d.excluir);
   let logoBuf = null;
@@ -446,7 +471,6 @@ async function buildPlanning(session, model, planning, onWarn) {
   const upServicio = generalDocx.find((d) => /servicio extra/.test(norm(d.nombre)));
   const upTelef = generalDocx.find((d) => /telefon/.test(norm(d.nombre)));
   const rol = (r) => general.filter((d) => d.rolDetectado === r && paraEste(d));
-  const contactos = general.filter((d) => d.rolDetectado === "contactos");
   const tablasExtra = general.filter((d) => d.rolDetectado === "tabla" && d.ext === ".xlsx" && paraEste(d));
   const otrosGeneral = generalDocx.filter((d) => d !== upServicio && d !== upTelef && d.rolDetectado === "documento" && paraEste(d));
 
@@ -717,7 +741,15 @@ async function buildPlanning(session, model, planning, onWarn) {
   // — Días —
   let ordinal = 0;
   let lluviaN = 0;
+  let evaluacionPuesta = false;
+  const ponEvaluacion = async () => {
+    if (evaluacionPuesta) return;
+    evaluacionPuesta = true;
+    await addFijo("evaluacion", { title: "ANEXO EVALUACIÓN", level: 1 });
+  };
   for (const dm of model.dias) {
+    // el anexo de evaluación va justo antes de «DÍA DE LLUVIA» (si no hay días de lluvia, tras el último día)
+    if (dm.kind === "lluvia") await ponEvaluacion();
     const bm = b.nextBookmark();
     if (dm.kind !== "lluvia") ordinal++;
     const dia = R.withExtraLines(dm.day, lineasExtraDia(dm));
@@ -726,7 +758,9 @@ async function buildPlanning(session, model, planning, onWarn) {
     if (lluvia) lluviaN++;
     const tituloDia = abreSignos(dm.day.title || "");
     const banos = (dm.servicios || []).find((x) => /^banos$/.test(norm(x.task)) && x.names && x.names.length);
+    const margenesDia = { top: 1134, right: 765, bottom: 1200, left: 765, header: 511, footer: 960 };
     const tablaDia = T.diaDobleXml(R.daysGrid([dia]).grid, {
+      anchoUtil: b.textWidth({ landscape: true, margins: margenesDia }),
       numero: lluvia ? String(lluviaN).padStart(2, "0") : String(ordinal),
       codigo: dm.label,
       titulo: tituloDia,
@@ -735,7 +769,7 @@ async function buildPlanning(session, model, planning, onWarn) {
       esLlegada: !lluvia && ordinal === 1,
       meta,
     });
-    b.addGenerated(R.anchor(bm) + tablaDia, { landscape: true, margins: { top: 1134, right: 765, bottom: 1200, left: 765, header: 511, footer: 960 } });
+    b.addGenerated(R.anchor(bm) + tablaDia, { landscape: true, margins: margenesDia });
     entries.push({ title: lluvia ? dm.titulo.replace(/^DÍA DE LLUVIA/, "DÍA DE LLUVIA") : `${dm.label}: ${tituloDia}`.trim().replace(/:$/, ""), level: 1, bookmark: bm });
     log.push({ type: "horario", day: dm.label, landscape: true, meta, conResp: Array.from(lineasExtraDia(dm).values()).flat().filter((l) => l.runs && /^Resp/.test(l.runs[0].text)).length });
     const byId = (id) => model.docsAll.find((d) => d.id === id);
@@ -745,6 +779,11 @@ async function buildPlanning(session, model, planning, onWarn) {
     }
     const yaDia = new Set(); // un mismo documento no se repite dentro del día (p. ej. «Día temático» tres veces)
     for (const it of dm.items) {
+      // documento fijo vinculado a una línea del horario (preparación del macuto para la marcha larga)
+      if (it.tipo === "fijo" && it.fijo) {
+        await addFijo(it.fijo, { title: it.texto, level: 2, day: dm.label });
+        continue;
+      }
       if (!["actividad", "especial"].includes(it.tipo)) continue;
       for (const id of it.docIds) {
         if (yaDia.has(id)) continue;
@@ -758,6 +797,7 @@ async function buildPlanning(session, model, planning, onWarn) {
       if (d) await addDoc(d, { title: `Oración de la noche – ${dm.label}`, type: "oracion_noche", day: dm.label, noIndex: true });
     }
   }
+  if (model.dias.length) await ponEvaluacion();
 
   // — Hojas de la Base de Datos solo para algunos plannings: enfermería y coches/autobuses —
   await bloqueTiendas(hojasBase("enfermeria"), "ENFERMERÍA", "enfermeria");
@@ -788,12 +828,14 @@ async function buildPlanning(session, model, planning, onWarn) {
   const bmPortada = b.nextBookmark();
   entries.unshift({ title: `Campamento Santa Paula ${cfg.anio}`, level: 1, bookmark: bmPortada });
   let cover = para(run(`Campamento Santa Paula ${cfg.anio}`, { font: FONT_LIGHT }), { style: "PlTitulo", after: 60, bookmark: bmPortada });
-  if (contactos.length) {
-    for (const c of contactos) {
-      const { xml, warnings } = await R.sheetsToXml(await readDoc(c), { landscape: false, boldFirstCol: true, size: 10.5 });
-      warnings.forEach(warn);
-      cover += xml;
-    }
+  if (model.contactos && model.contactos.filas.length) {
+    cover += T.contactosXml(model.contactos.filas, { ancho: b.textWidth({ landscape: false }) });
+    log.push({ type: "contactos", filas: model.contactos.filas.length });
+    (model.contactos.avisos || []).slice(0, 6).forEach((a) => warn(`Contactos: ${a}`));
+  } else if (model.contactos && (model.contactos.error || model.contactos.docs.length)) {
+    warn(`Contactos de monitores: ${(model.contactos.error || "no se han reconocido contactos").replace(/\.+$/, "")}. La portada sale sin la tabla de contactos.`);
+  } else {
+    warn("Contactos de monitores: no se ha indicado ningún archivo de contactos; la portada sale sin la tabla de contactos.");
   }
   cover += para(run(cfg.lema || MOTTO_DEFECTO, { font: FONT_LIGHT, size: 16 }), { align: "center", before: 200, after: 0 });
   b.chunks.unshift(cover + para("", { sectPr: b.sectPrXml(), after: 0 }));
@@ -816,39 +858,6 @@ async function buildPlanning(session, model, planning, onWarn) {
 
 // ───────────────────────── Comprobaciones previas a la entrega ─────────────────────────
 
-/**
- * Comprueba que un XML está bien formado (etiquetas abiertas y cerradas en orden) recorriéndolo
- * una sola vez, sin construir el árbol: en el servidor (512 MB) un árbol DOM del documento
- * completo podía llevarse casi toda la memoria. Devuelve null si está bien, o el motivo.
- */
-function bienFormado(xml) {
-  const pila = [];
-  const tag = /<(\/?)([A-Za-z_][\w:.-]*)((?:\s+[\w:.-]+\s*=\s*(?:"[^"]*"|'[^']*'))*)\s*(\/?)>/y;
-  let i = xml.indexOf("<");
-  while (i >= 0) {
-    if (xml.startsWith("<?", i)) {
-      const j = xml.indexOf("?>", i);
-      if (j < 0) return "instrucción sin cerrar";
-      i = xml.indexOf("<", j + 2);
-      continue;
-    }
-    if (xml.startsWith("<!--", i)) {
-      const j = xml.indexOf("-->", i);
-      if (j < 0) return "comentario sin cerrar";
-      i = xml.indexOf("<", j + 3);
-      continue;
-    }
-    tag.lastIndex = i;
-    const m = tag.exec(xml);
-    if (!m) return `etiqueta mal formada cerca de la posición ${i}`;
-    if (m[1]) {
-      if (pila.pop() !== m[2]) return `la etiqueta </${m[2]}> no coincide con la que se abrió`;
-    } else if (!m[4]) pila.push(m[2]);
-    i = xml.indexOf("<", tag.lastIndex);
-  }
-  return pila.length ? `quedan etiquetas sin cerrar (<${pila[pila.length - 1]}>)` : null;
-}
-
 async function verify(planning, model, built) {
   const checks = [];
   const add = (nombre, ok, detalle = "") => checks.push({ n: checks.length + 1, nombre, ok: !!ok, detalle });
@@ -861,7 +870,7 @@ async function verify(planning, model, built) {
     xml = await zip.file("word/document.xml").async("string");
     stylesXml = await zip.file("word/styles.xml").async("string");
     numberingXml = zip.file("word/numbering.xml") ? await zip.file("word/numbering.xml").async("string") : "";
-    const fallo = bienFormado(xml);
+    const fallo = V.bienFormado(xml);
     if (fallo) throw new Error(fallo);
     validDoc = true;
   } catch (e) {
@@ -887,42 +896,14 @@ async function verify(planning, model, built) {
     add("Todo el cuerpo está en Calibri Light 11 (sin Montserrat, Play, Verdana ni otras fuentes sueltas)", !intrusas.length, intrusas.length ? `Quedan: ${intrusas.join(", ")}` : "");
   }
 
-  // tablas de material: ancho = ancho útil de su sección. Se recorre el XML por posiciones
-  // (sin trocearlo ni copiarlo) para no gastar memoria en el servidor
+  // Tablas: reales de Word, material a todo el ancho, estructura de columnas, sin filas repetidas ni concatenadas
   if (validDoc) {
-    const reSect = /<w:sectPr[ >][\s\S]*?<\/w:sectPr>/g;
-    let n = 0;
-    const mal = [];
-    let desde = 0;
-    let m;
-    while ((m = reSect.exec(xml))) {
-      const sp = m[0];
-      const hasta = m.index;
-      const pgW = /<w:pgSz[^>]*w:w="(\d+)"/.exec(sp);
-      const iz = /<w:pgMar[^>]*w:left="(\d+)"/.exec(sp);
-      const de = /<w:pgMar[^>]*w:right="(\d+)"/.exec(sp);
-      if (pgW && iz && de) {
-        const util = +pgW[1] - +iz[1] - +de[1];
-        let pos = xml.indexOf("<w:tbl>", desde);
-        while (pos >= 0 && pos < hasta) {
-          const cab0 = xml.slice(pos, pos + 12000);
-          const finTabla = cab0.indexOf("</w:tbl>");
-          const cab = finTabla > 0 ? cab0.slice(0, finTabla) : cab0;
-          const finGrid = cab.indexOf("</w:tblGrid>");
-          let cuarta = -1;
-          for (let k = 0, q = finGrid; k < 4 && q >= 0; k++) q = cuarta = cab.indexOf("<w:tr", q + 1) >= 0 ? cab.indexOf("<w:tr", q + 1) : -1;
-          const texto = (cab.slice(finGrid, cuarta > 0 ? cuarta : cab.length).match(/<w:t(?: [^>]*)?>[^<]*/g) || []).map((x) => x.replace(/<w:t(?: [^>]*)?>/, "")).join(" ");
-          if (finGrid > 0 && /material\s+(no\s+)?fungible|recursos\s+materiales/i.test(texto)) {
-            n++;
-            const grid = (cab.slice(0, finGrid).split("<w:tblGridChange")[0].match(/<w:gridCol w:w="(\d+)"/g) || []).reduce((a, g) => a + parseInt(g.replace(/\D/g, ""), 10), 0);
-            if (Math.abs(grid - util) > 80) mal.push(`${(grid / 567).toFixed(1)} cm en vez de ${(util / 567).toFixed(1)} cm`);
-          }
-          pos = xml.indexOf("<w:tbl>", pos + 7);
-        }
-      }
-      desde = m.index + sp.length;
-    }
-    add("Las tablas de material ocupan todo el ancho útil de la página", mal.length === 0, mal.length ? `${mal.length} de ${n}: ${mal.slice(0, 3).join("; ")}` : `${n} tablas`);
+    const rt = V.revisaTablas(xml);
+    add("Las tablas de material ocupan todo el ancho útil de la página", rt.materialAncho.length === 0, rt.materialAncho.length ? `${rt.materialAncho.length} de ${rt.material}: ${rt.materialAncho.slice(0, 3).join("; ")}` : `${rt.material} tablas`);
+    add("Las tablas no sobresalen de los márgenes", rt.sobresalen.length === 0, rt.sobresalen.length ? `${rt.sobresalen.length}: ${rt.sobresalen.slice(0, 3).join("; ")}` : `${rt.tablas} tablas revisadas`);
+    add("Las tablas de materiales y de relaciones mantienen sus columnas, sin filas repetidas ni elementos concatenados en una celda", rt.estructura.length === 0, rt.estructura.slice(0, 4).join(" · "));
+    const tabs = V.tabulacionesSimuladas(xml);
+    add("No hay tablas simuladas con tabulaciones", tabs === 0, tabs ? `${tabs} párrafos con 3 o más tabulaciones seguidas` : "");
   }
 
   // tiendas: una tabla por página, Pequeños → Medianos → Mayores, sin tabla de «grupos de nivel» completo
@@ -935,6 +916,11 @@ async function verify(planning, model, built) {
     }
   }
 
+  {
+    const anchos = built.log.filter((l) => l.type === "horario" && l.meta && l.meta.ancho);
+    const cortos = anchos.filter((l) => Math.abs(l.meta.ancho - l.meta.anchoUtil) > 40);
+    add("Las tablas de cada día ocupan todo el ancho útil de la página", anchos.length > 0 && cortos.length === 0, cortos.length ? `${cortos.length} días con otro ancho: ${cortos.slice(0, 3).map((l) => l.day).join(", ")}` : `${anchos.length} días`);
+  }
   const diasLog = built.log.filter((l) => l.type === "horario").map((l) => l.day);
   const diasModelo = model.dias.map((d) => d.label);
   add("Están todos los días de la tabla principal", diasLog.length === diasModelo.length, `${diasLog.length} de ${diasModelo.length}`);
@@ -972,6 +958,58 @@ async function verify(planning, model, built) {
   add("La oración del día va justo después del horario", ordenOk);
   add("La oración de la noche va al final de cada día", ordenOk && nocheOk);
 
+  // oraciones de la mañana y de la noche: todas las subidas para un día del campamento están dentro, cada una en su sitio
+  {
+    const dias = new Set(model.dias.map((d) => d.label));
+    const subidas = model.docsAll
+      .filter((d) => d.categoria === "oraciones" && !d.excluir && !d.sensibleBloqueado)
+      .map((d) => {
+        const p = parseOracionText(d.filename || d.nombre);
+        return { id: d.id, nombre: d.nombre, dia: d.dia || p.day, noche: d.noche != null ? d.noche : p.night };
+      })
+      .filter((o) => o.dia && dias.has(o.dia));
+    const logOra = built.log.filter((l) => l.type === "oracion_dia" || l.type === "oracion_noche");
+    const faltan = subidas.filter((o) => !logOra.some((l) => l.docId === o.id && l.type === (o.noche ? "oracion_noche" : "oracion_dia")));
+    const mezcladas = logOra.filter((l) => {
+      const o = subidas.find((x) => x.id === l.docId);
+      return o && (l.type === "oracion_noche") !== !!o.noche;
+    });
+    const nNoche = subidas.filter((o) => o.noche).length;
+    add(
+      "Están todas las oraciones subidas, las de la mañana y las de la noche, sin confundirlas",
+      faltan.length === 0 && mezcladas.length === 0,
+      faltan.length || mezcladas.length ? `Faltan: ${faltan.map((o) => `${o.dia} ${o.noche ? "noche" : "mañana"}`).join(", ") || "ninguna"}; confundidas: ${mezcladas.length}` : `${subidas.length - nNoche} de la mañana y ${nNoche} de la noche`
+    );
+  }
+
+  // documentos fijos asociados: macuto (si el horario lo pide) y anexo de evaluación (antes de los días de lluvia), una sola vez cada uno
+  {
+    const pideMacuto = model.dias.some((d) => (d.items || []).some((i) => i.tipo === "fijo" && i.fijo === "macuto"));
+    const macutos = built.log.filter((l) => l.type === "fijo" && l.special === "macuto").length;
+    if (pideMacuto) add("Está el documento de preparación del macuto para la marcha (una sola vez)", macutos === 1, macutos === 1 ? "" : macutos === 0 ? `No se ha podido incluir: ${path.join(BASE_DIR, FIJOS_ASOCIADOS.macuto.archivo)}` : `Aparece ${macutos} veces`);
+    const ev = built.log.map((l, i) => ({ l, i })).filter((x) => x.l.type === "fijo" && x.l.special === "evaluacion");
+    if (model.dias.length) {
+      const lluvias = new Set(model.dias.filter((d) => d.kind === "lluvia").map((d) => d.label));
+      const primeraLluvia = built.log.findIndex((l) => l.type === "horario" && lluvias.has(l.day));
+      const ultimoNormal = built.log.map((l, i) => (l.type === "horario" && !lluvias.has(l.day) ? i : -1)).reduce((a, b) => Math.max(a, b), -1);
+      const bien = ev.length === 1 && (primeraLluvia < 0 ? ev[0].i > ultimoNormal : ev[0].i < primeraLluvia && ev[0].i > ultimoNormal);
+      add("El anexo de evaluación está una sola vez, justo antes de los días de lluvia", bien, bien ? "" : ev.length === 0 ? `No se ha podido incluir: ${path.join(BASE_DIR, FIJOS_ASOCIADOS.evaluacion.archivo)}` : "Está duplicado o fuera de su sitio");
+    }
+    // ningún documento ni apartado fijo repetido
+    const cuenta = new Map();
+    for (const l of built.log) if ((l.type === "base" || l.type === "fijo") && l.special) cuenta.set(`${l.special}|${l.titulo}`, (cuenta.get(`${l.special}|${l.titulo}`) || 0) + 1);
+    const rep = [...cuenta.entries()].filter(([, n]) => n > 1).map(([k]) => k.split("|")[1]);
+    const repDia = [];
+    const vistoDia = new Set();
+    for (const l of built.log) {
+      if (!l.docId || !l.day || !["actividad", "oracion_dia", "oracion_noche"].includes(l.type)) continue;
+      const k = `${l.day}|${l.type}|${l.docId}`;
+      if (vistoDia.has(k)) repDia.push(`${l.day}: ${l.titulo}`);
+      vistoDia.add(k);
+    }
+    add("No hay documentos ni apartados duplicados", rep.length === 0 && repDia.length === 0, [...rep, ...repDia].slice(0, 4).join(" · "));
+  }
+
   // orden de los bloques generales: turnos → tiendas → grupos de trabajo → servicio → planning general → primer día
   {
     const orden = ["turnos", "grupos_nivel", "grupos_trabajo", "servicio", "planning_general", "horario"];
@@ -986,7 +1024,7 @@ async function verify(planning, model, built) {
   add("Tiempo libre dirigido se desarrolla una sola vez", cuenta("tld") <= 1, `${cuenta("tld")} vez/veces`);
 
   {
-    const tipos = built.log.map((l) => l.type);
+    const tipos = built.log.map((l) => l.type).filter((t) => t !== "contactos");
     const idx = tipos.indexOf("dinamica");
     const alFinal = idx === -1 || tipos.slice(idx).every((t) => t === "dinamica");
     add("Las dinámicas van al final del planning", alFinal, idx === -1 ? "Este planning no lleva dinámicas" : `${tipos.filter((t) => t === "dinamica").length} documento(s)`);
@@ -1003,7 +1041,13 @@ async function verify(planning, model, built) {
   // portada: título del campamento antes del índice, y contactos de los monitores
   const iTitulo = xml.indexOf(`Campamento Santa Paula ${model.anio || ""}`.trim());
   const iIndice = xml.indexOf("ÍNDICE");
-  add("La portada (con los contactos de los monitores) va antes del índice", iTitulo >= 0 && iIndice > iTitulo && (!model.hayContactos || /@/.test(xml.slice(iTitulo, iIndice))), model.hayContactos ? "" : "No se han subido contactos");
+  {
+    const portada = iTitulo >= 0 && iIndice > iTitulo ? xml.slice(iTitulo, iIndice) : "";
+    const filasCt = (model.contactos && model.contactos.filas) || [];
+    const faltanCt = filasCt.filter((f) => (f.email && !portada.includes(f.email.split(" / ")[0])) || (f.telefono && !portada.includes(f.telefono)) || !portada.includes(esc(f.nombre).slice(0, 40)));
+    add("La portada va antes del índice", iTitulo >= 0 && iIndice > iTitulo);
+    if (filasCt.length) add("La portada lleva los contactos de todos los monitores, cada correo y teléfono en su fila", faltanCt.length === 0, faltanCt.length ? `Faltan o no coinciden: ${faltanCt.slice(0, 4).map((f) => f.nombre).join(", ")}` : `${filasCt.length} monitores`);
+  }
   add("El índice recoge todas las secciones", built.entries.length > 0, `${built.entries.length} entradas`);
   add("El logo del año está en el índice", !!built.logo, built.logo ? "" : "No se ha subido el logo del año");
   const TIPOS_DOC = ["actividad", "oracion_dia", "oracion_noche", "dinamica", "extra", "extra_general"]; // las hojas de la Base de Datos salen de un mismo Excel
@@ -1090,6 +1134,12 @@ async function generate(session, progress = () => {}) {
               entry.paginas = (await PDFDocument.load(fs.readFileSync(r.path), { ignoreEncryption: true })).getPageCount();
             } catch (_) {}
             entry.checks.push({ n: entry.checks.length + 1, nombre: "El PDF se ha generado", ok: true, detalle: entry.paginas ? `${entry.paginas} páginas` : "" });
+            try {
+              const blancas = await V.paginasEnBlanco(r.path, fs, await require("./pdfconv").load());
+              entry.checks.push({ n: entry.checks.length + 1, nombre: "No hay páginas en blanco inesperadas", ok: blancas.length === 0, detalle: blancas.length ? `Páginas en blanco: ${blancas.slice(0, 12).join(", ")}${blancas.length > 12 ? "…" : ""}` : "" });
+            } catch (e) {
+              entry.avisos.push(`No se han podido revisar las páginas en blanco del PDF: ${e.message}`);
+            }
           } else {
             entry.checks.push({ n: entry.checks.length + 1, nombre: "El PDF se ha generado", ok: false, detalle: r.error });
             entry.avisos.push(`PDF no generado: ${r.error}`);

@@ -380,6 +380,8 @@ async function extractPage(page, lib, imgCache = new Map()) {
   for (const tx of texts) {
     if (tx.w < 2) continue;
     for (const s of segs.h) {
+      // un trazo cuyo extremo toca una línea vertical es el borde de una celda, no un subrayado
+      if (segs.v.some((v) => (Math.abs(v.x - s.x1) <= 3 || Math.abs(v.x - s.x2) <= 3) && s.y >= v.y1 - 2.5 && s.y <= v.y2 + 2.5)) continue;
       if (s.y > tx.y + 0.5 && s.y < tx.y + 0.3 * tx.size && s.x1 <= tx.x + tx.w * 0.4 && s.x2 >= tx.x + tx.w * 0.6 && s.x2 - s.x1 < tx.w * 1.6 + 8 && s.w < 2.5) { tx.underline = true; s.used = true; break; }
     }
   }

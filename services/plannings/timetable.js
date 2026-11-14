@@ -227,6 +227,8 @@ function classifyLine(text) {
   if (/^oracion de la manana/.test(n)) return { type: "oracion_dia" };
   if (n === "oracion") return { type: "oracion_noche" };
   if (/^oracion monitores/.test(n)) return { type: "oracion_monitores" };
+  // documentos fijos vinculados a una línea del horario (se reutilizan tal cual, sin rehacerlos)
+  if (/^preparacion (del |de los )?macutos?\b/.test(n)) return { type: "fijo", fijo: "macuto" };
   if (/olimpiad/.test(n)) return { type: "especial", special: "olimpiadas" };
   if (/(tl dirigido|tiempo libre dirigido|\btld\b)/.test(n)) return { type: "especial", special: "tld" };
   if (ROUTINE.some((re) => re.test(n))) return { type: "rutina" };
@@ -270,6 +272,7 @@ function dayItems(day) {
       mergeLines(cell.lines).forEach((line, li) => {
         const cls = classifyLine(head(line.text));
         if (cls.type === "vacio" || cls.type === "rutina") return;
+        if (cls.fijo) cls.special = null;
         const canon = cls.special || cls.type;
         const dedupe = cls.type === "actividad" ? `${cls.type}:${norm(line.text)}` : canon;
         if (seenKeys.has(dedupe)) return;
@@ -283,8 +286,9 @@ function dayItems(day) {
           text: line.text.replace(/\s*\+\s*$/, "").trim(),
           bold: line.bold,
           cellText: cell.text,
-          type: cls.type, // actividad | especial | oracion_dia | oracion_noche
+          type: cls.type, // actividad | especial | oracion_dia | oracion_noche | fijo
           special: cls.special || null,
+          fijo: cls.fijo || null,
         });
       });
     });

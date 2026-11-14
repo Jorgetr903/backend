@@ -247,6 +247,9 @@ function findTables(raw) {
   const vH = [], vV = [];
   for (const f of raw.fills) {
     if (f.color === "FFFFFF" || f.w * f.h > 0.9 * pageArea || f.w < 6 || f.h < 5) continue;
+    // relleno interior del mismo color, apenas unos puntos dentro de otro (Google Docs pinta cada celda
+    // dos veces): no marca bordes de celda propios
+    if (raw.fills.some((g) => g !== f && g.color === f.color && g.w * g.h > f.w * f.h && f.x >= g.x - 0.5 && f.y >= g.y - 0.5 && f.x + f.w <= g.x + g.w + 0.5 && f.y + f.h <= g.y + g.h + 0.5 && f.x - g.x < 6 && g.x + g.w - (f.x + f.w) < 6)) continue;
     vH.push({ y: f.y, x1: f.x, x2: f.x + f.w, virtual: true }, { y: f.y + f.h, x1: f.x, x2: f.x + f.w, virtual: true });
     vV.push({ x: f.x, y1: f.y, y2: f.y + f.h, virtual: true }, { x: f.x + f.w, y1: f.y, y2: f.y + f.h, virtual: true });
   }
@@ -259,7 +262,12 @@ function findTables(raw) {
   for (let i = 0; i < nodes.length; i++)
     for (let j = i + 1; j < nodes.length; j++) {
       const a = nodes[i], b = nodes[j];
-      if (a.t === b.t) continue;
+      if (a.t === b.t) {
+        // trazos consecutivos de una misma línea (Google Docs dibuja cada borde en trozos): son uno solo
+        if (a.t === "h" && Math.abs(a.s.y - b.s.y) < 1.5 && a.s.x1 <= b.s.x2 + 3 && b.s.x1 <= a.s.x2 + 3) par[find(i)] = find(j);
+        else if (a.t === "v" && Math.abs(a.s.x - b.s.x) < 1.5 && a.s.y1 <= b.s.y2 + 3 && b.s.y1 <= a.s.y2 + 3) par[find(i)] = find(j);
+        continue;
+      }
       const h = a.t === "h" ? a.s : b.s, v = a.t === "h" ? b.s : a.s;
       if (v.x >= h.x1 - tol && v.x <= h.x2 + tol && h.y >= v.y1 - tol && h.y <= v.y2 + tol) par[find(i)] = find(j);
     }
@@ -270,9 +278,40 @@ function findTables(raw) {
     const hs = comp.filter((n) => n.t === "h").map((n) => n.s), vs = comp.filter((n) => n.t === "v").map((n) => n.s);
     if (hs.length < 2 || vs.length < 2) continue;
     // hace falta algún borde dibujado de verdad (si solo hay rellenos, se tratan como sombreado de párrafo)
-    if (hs.filter((s) => !s.virtual).length < 1 || vs.filter((s) => !s.virtual).length < 1) continue;
-    const xs = cluster(vs.map((s) => s.x)), ys = cluster(hs.map((s) => s.y));
+    // (tablas de solo reglas horizontales con celdas sombreadas: al menos 2 reglas y rellenos que forman 3 o más columnas)
+    const realHs = hs.filter((s) => !s.virtual).length;
+    const sinVerticales = vs.filter((s) => !s.virtual).length < 1;
+    if (realHs < 1) continue;
+    if (sinVerticales && !(realHs >= 2 && cluster(vs.map((s) => s.x), 3).length >= 4)) continue;
+    const xs = cluster(vs.map((s) => s.x), 3), ys = cluster(hs.map((s) => s.y), 3);
     if (xs.length < 2 || ys.length < 2) continue;
+    // filas cortadas por un salto de página: la de arriba (o la de abajo) no tiene borde horizontal exterior, pero
+    // las líneas verticales de las columnas sí llegan hasta ella. La tabla se extiende hasta donde llegan
+    {
+      const realVs = vs.filter((s) => !s.virtual && xs.some((x) => Math.abs(x - s.x) < 3));
+      if (realVs.length >= 2) {
+        const minY = Math.min(...realVs.map((s) => s.y1)), maxY = Math.max(...realVs.map((s) => s.y2));
+        if (ys[0] - minY > 6 && ys[0] - minY < 90 && ys[0] < raw.H * 0.25) ys.unshift(minY);
+        if (maxY - ys[ys.length - 1] > 6 && maxY - ys[ys.length - 1] < 90 && ys[ys.length - 1] > raw.H * 0.75) ys.push(maxY);
+      }
+    }
+    // fila de cabecera con solo líneas horizontales (sin verticales): una regla que cubre todo el ancho de la tabla, justo
+    // encima, con texto entre ella y la primera fila. Se añade como primera fila
+    {
+      const ancho = xs[xs.length - 1] - xs[0];
+      const topY = ys[0];
+      // (Google Docs dibuja cada regla en trozos: se suman los trozos que están a la misma altura)
+      const cubre = (y) => {
+        const iv = realH.filter((l) => !hs.includes(l) && Math.abs(l.y - y) < 1.5).map((l) => [Math.max(l.x1, xs[0] - 3), Math.min(l.x2, xs[xs.length - 1] + 3)]).filter(([a, b]) => b > a).sort((p, q) => p[0] - q[0]);
+        let cov = 0, end = -1e9;
+        for (const [a, b] of iv) { const s0 = Math.max(a, end); if (b > s0) cov += b - s0; end = Math.max(end, b); }
+        return cov >= 0.9 * ancho;
+      };
+      const cand = realH
+        .filter((l) => !hs.includes(l) && l.y < topY - 6 && topY - l.y <= 40 && cubre(l.y))
+        .sort((a, b) => b.y - a.y)[0];
+      if (cand && raw.texts.some((t) => t.str.trim() && t.y > cand.y + 2 && t.y < topY && t.x >= xs[0] - 3 && t.x <= xs[xs.length - 1] + 3)) ys.unshift(cand.y);
+    }
     const bbox = { x1: xs[0], x2: xs[xs.length - 1], y1: ys[0], y2: ys[ys.length - 1] };
     if (bbox.x2 - bbox.x1 > raw.W * 0.995 && bbox.y2 - bbox.y1 > raw.H * 0.97) continue; // marco de página
     // cobertura de bordes
@@ -501,7 +540,7 @@ async function convertPdf(buffer) {
           } else if (b && b.kind === "para" && b.P.gapBefore == null) b.P.gapBefore = 1.5 * b.P.lines[0].size;
         }
       }
-      for (const bl of p.blocks) blocks.push(bl);
+      for (const bl of p.blocks) { bl.pi = pi; bl.pageH = p.H; blocks.push(bl); }
     });
     out.push({ landscape: g.landscape, margins, blocks, textWidth: pw - (margins.left + margins.right) / TW, ctxLeft: Number.isFinite(minX) ? minX : 56, ctxRight: Number.isFinite(maxR) ? maxR : pw - 56 });
   }
@@ -522,7 +561,8 @@ function blocksToXml(blocks, builder, ctxFor, availPt, imgCache) {
     if (!rid) { rid = builder.registerImage(im.enc.buf, im.enc.ext); imgCache.set(im.enc, rid); }
     return builder.imageXml(rid, Math.round(w * 12700), Math.round(h * 12700), "Imagen del documento");
   };
-  for (const bl of blocks) {
+  for (let bi = 0; bi < blocks.length; bi++) {
+    const bl = blocks[bi];
     if (bl.kind === "break") { xml += `<w:p><w:r><w:br w:type="page"/></w:r></w:p>`; firstPara = true; continue; }
     if (bl.kind === "para") {
       xml += paraXml(bl.P, ctxFor(bl), { firstGap: null });
@@ -537,13 +577,29 @@ function blocksToXml(blocks, builder, ctxFor, availPt, imgCache) {
       const ctx = ctxFor(bl);
       const ims = bl.ims;
       const k = Math.min(1, availPt / (Math.max(...ims.map((i) => i.x + i.w)) - Math.min(...ims.map((i) => i.x))));
-      const widths = ims.map((im, i) => Math.round(((i < ims.length - 1 ? Math.max(im.w, ims[i + 1].x - im.x) : im.w) * k) * TW) + 40);
+      let widths = ims.map((im, i) => Math.round(((i < ims.length - 1 ? Math.max(im.w, ims[i + 1].x - im.x) : im.w) * k) * TW) + 40);
       const lead = Math.max(0, Math.round((ims[0].x - ctx.left) * TW));
-      const cells = ims.map((im, i) => `<w:tc><w:tcPr><w:tcW w:w="${widths[i]}" w:type="dxa"/></w:tcPr><w:p><w:pPr><w:spacing w:before="0" w:after="0"/></w:pPr>${imgXml(im, im.w * k)}</w:p></w:tc>`).join("");
+      // imágenes solapadas en el PDF: la fila nunca puede pasar del ancho útil (sangría incluida)
+      const maxTw = Math.round(availPt * TW) - (lead > 40 ? lead : 0);
+      const sumaW = widths.reduce((a, b2) => a + b2, 0);
+      const k2 = sumaW > maxTw ? maxTw / sumaW : 1;
+      if (k2 < 1) widths = widths.map((w) => Math.max(200, Math.floor(w * k2)));
+      const cells = ims.map((im, i) => `<w:tc><w:tcPr><w:tcW w:w="${widths[i]}" w:type="dxa"/></w:tcPr><w:p><w:pPr><w:spacing w:before="0" w:after="0"/></w:pPr>${imgXml(im, Math.min(im.w * k, (widths[i] - 40) / TW))}</w:p></w:tc>`).join("");
       xml += `<w:tbl><w:tblPr><w:tblW w:w="${widths.reduce((a, b2) => a + b2, 0)}" w:type="dxa"/>${lead > 40 ? `<w:tblInd w:w="${lead}" w:type="dxa"/>` : ""}<w:tblBorders>${["top", "left", "bottom", "right", "insideH", "insideV"].map((b2) => `<w:${b2} w:val="nil"/>`).join("")}</w:tblBorders><w:tblLayout w:type="fixed"/><w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="0" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="40" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tblGrid>${widths.map((w) => `<w:gridCol w:w="${w}"/>`).join("")}</w:tblGrid><w:tr><w:trPr><w:cantSplit/></w:trPr>${cells}</w:tr></w:tbl>`;
       xml += `<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="120" w:lineRule="exact"/></w:pPr></w:p>`;
     } else if (bl.kind === "table") {
-      xml += tableXml(bl, builder, availPt, imgXml, ctxFor(bl));
+      let parts = tableParts(bl, builder, availPt, imgXml, ctxFor(bl));
+      // continuación en la página siguiente: una sola tabla
+      let last = bl;
+      while (blocks[bi + 1] && blocks[bi + 1].kind === "table" && blocks[bi + 1].pi === last.pi + 1 && last.pageH && last.bottom > last.pageH * 0.72 && blocks[bi + 1].top < blocks[bi + 1].pageH * 0.25) {
+        const nxt = blocks[bi + 1];
+        const merged = fusionaContinuacion(parts, tableParts(nxt, builder, availPt, imgXml, ctxFor(nxt), !!parts.material));
+        if (!merged) break;
+        parts = merged;
+        last = nxt;
+        bi++;
+      }
+      xml += parts.open + parts.rows.join("") + parts.close;
       xml += `<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="120" w:lineRule="exact"/></w:pPr></w:p>`;
     }
   }
@@ -573,14 +629,130 @@ function splitSpanCells(t, texts) {
   t.cells = out;
 }
 
+/** XML de una tabla (una sola cadena). Ver tableParts para trabajar con sus filas por separado */
 function tableXml(bl, builder, availPt, imgXml, pageCtx) {
+  const p = tableParts(bl, builder, availPt, imgXml, pageCtx);
+  return p.open + p.rows.join("") + p.close;
+}
+
+/** Texto normalizado de una fila de tabla (para detectar cabeceras repetidas al continuar en otra página) */
+function rowKey(rowXml) {
+  return (rowXml.match(/<w:t(?: [^>]*)?>[^<]*/g) || []).map((x) => x.replace(/<w:t(?: [^>]*)?>/, "")).join(" ").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+/**
+ * Una tabla que continúa en la página siguiente (mismas columnas, con o sin fila de cabecera repetida)
+ * se convierte en UNA sola tabla de Word: se quita la cabecera repetida y la primera fila queda marcada
+ * como cabecera para que Word la repita sola donde corresponda.
+ */
+/** Celdas de una fila (sin tablas anidadas): [{xml, pr, body, span, vm, texto}] o null */
+function celdasDeFila(rowXml) {
+  if (rowXml.indexOf("<w:tbl>") >= 0) return null;
+  const m = /^(<w:tr>(?:<w:trPr>[\s\S]*?<\/w:trPr>)?)([\s\S]*)<\/w:tr>$/.exec(rowXml);
+  if (!m) return null;
+  const cells = (m[2].match(/<w:tc>[\s\S]*?<\/w:tc>/g) || []).map((xml) => {
+    const mm = /^<w:tc>(<w:tcPr>[\s\S]*?<\/w:tcPr>)([\s\S]*)<\/w:tc>$/.exec(xml);
+    if (!mm) return null;
+    const vm = /<w:vMerge w:val="restart"\/>/.test(mm[1]) ? "restart" : /<w:vMerge\/>/.test(mm[1]) ? "cont" : null;
+    const span = (/<w:gridSpan w:val="(\d+)"/.exec(mm[1]) || [])[1] || "1";
+    return { pr: mm[1], body: mm[2], vm, span, texto: rowKey(mm[2]) };
+  });
+  if (cells.some((c) => !c)) return null;
+  return { head: m[1], cells };
+}
+
+/**
+ * Una fila que el PDF parte entre dos páginas (la segunda mitad llega con la primera celda vacía) se vuelve
+ * a juntar en una sola fila: el texto de cada celda continúa en el mismo párrafo.
+ */
+function unePartes(ra, rb) {
+  const A = celdasDeFila(ra), B = celdasDeFila(rb);
+  if (!A || !B || A.cells.length !== B.cells.length) return null;
+  if (!A.cells.every((c, i) => c.span === B.cells[i].span)) return null;
+  if (B.cells[0].texto || !A.cells[0].texto || B.cells[0].vm) return null;
+  const cells = A.cells.map((ca, i) => {
+    const cb = B.cells[i];
+    if (cb.vm === "restart") return `<w:tc>${cb.pr}${cb.body}</w:tc>`; // sigue una celda alta: continúa como celda propia
+    if (ca.vm === "cont" || !cb.texto) return `<w:tc>${ca.pr}${ca.body}</w:tc>`;
+    if (!ca.texto) return `<w:tc>${ca.pr}${cb.body}</w:tc>`;
+    // pegar el último párrafo de A con el primero de B
+    const bodyA = ca.body.replace(/<\/w:p>\s*$/, "");
+    const bodyB = cb.body.replace(/^<w:p>(?:<w:pPr>[\s\S]*?<\/w:pPr>)?/, "");
+    return `<w:tc>${ca.pr}${bodyA}<w:r><w:t xml:space="preserve"> </w:t></w:r>${bodyB}</w:tc>`;
+  });
+  return `${A.head}${cells.join("")}</w:tr>`;
+}
+
+/** Límites acumulados (twips) de una rejilla */
+function acumulados(colW) {
+  const c = [0];
+  for (const w of colW) c.push(c[c.length - 1] + w);
+  return c;
+}
+
+/** Reexpresa una fila en otra rejilla más fina: cada celda abarca las columnas nuevas que caen dentro de la antigua */
+function reRejilla(rowXml, viejas, nuevas) {
+  if (rowXml.indexOf("<w:tbl>") >= 0) return null;
+  const m = /^(<w:tr>(?:<w:trPr>[\s\S]*?<\/w:trPr>)?)([\s\S]*)<\/w:tr>$/.exec(rowXml);
+  if (!m) return null;
+  const cv = acumulados(viejas), cn = acumulados(nuevas);
+  let col = 0;
+  let ok = true;
+  const cells = (m[2].match(/<w:tc>[\s\S]*?<\/w:tc>/g) || []).map((xml) => {
+    const span = parseInt((/<w:gridSpan w:val="(\d+)"/.exec(xml) || [])[1] || "1", 10);
+    const x1 = cv[col], x2 = cv[Math.min(col + span, viejas.length)];
+    col += span;
+    const i1 = cn.findIndex((v) => Math.abs(v - x1) <= 60), i2 = cn.findIndex((v) => Math.abs(v - x2) <= 60);
+    if (i1 < 0 || i2 < 0 || i2 <= i1) { ok = false; return xml; }
+    const sp = i2 - i1;
+    const w = cn[i2] - cn[i1];
+    let out = xml.replace(/<w:gridSpan w:val="\d+"\/>/, "").replace(/<w:tcW w:w="\d+" w:type="dxa"\/>/, `<w:tcW w:w="${w}" w:type="dxa"/>${sp > 1 ? `<w:gridSpan w:val="${sp}"/>` : ""}`);
+    return out;
+  });
+  return ok ? `${m[1]}${cells.join("")}</w:tr>` : null;
+}
+
+function fusionaContinuacion(a, b) {
+  // misma anchura total y los límites de columna de la rejilla más basta están en la más fina
+  const totA = a.colW.reduce((x, y) => x + y, 0), totB = b.colW.reduce((x, y) => x + y, 0);
+  if (Math.abs(totA - totB) > 150 || Math.abs((a.indent || 0) - (b.indent || 0)) > 150) return null;
+  const ca = acumulados(a.colW), cb = acumulados(b.colW);
+  const [basta, fina] = ca.length <= cb.length ? [ca, cb] : [cb, ca];
+  if (!basta.every((v) => fina.some((w) => Math.abs(v - w) <= 60))) return null;
+  if (ca.length !== cb.length) {
+    const G = ca.length > cb.length ? a.colW : b.colW;
+    const ra = ca.length < cb.length ? a.rows.map((r) => reRejilla(r, a.colW, G)) : a.rows;
+    const rb = cb.length < ca.length ? b.rows.map((r) => reRejilla(r, b.colW, G)) : b.rows;
+    if (ra.some((r) => !r) || rb.some((r) => !r)) return null;
+    const open = (ca.length > cb.length ? a : b).open;
+    a = { ...a, rows: ra, colW: G, open };
+    b = { ...b, rows: rb, colW: G };
+  }
+  const ka = a.rows.map(rowKey), kb = b.rows.map(rowKey);
+  let k = 0;
+  while (k < kb.length - 1 && k < ka.length && ka[k] && ka[k] === kb[k]) k++;
+  // una primera fila «MATERIAL FUNGIBLE / NO FUNGIBLE» que no repite la cabecera anterior es una tabla nueva, no una continuación
+  if (k === 0 && kb[0] !== undefined) {
+    const txt = (b.rows[0].match(/<w:t(?: [^>]*)?>[^<]*/g) || []).map((x) => x.replace(/<w:t[^>]*>/, "")).join(" ");
+    if (/^\s*(material\s+(no\s+)?fungible|recursos\s+materiales)\b/i.test(txt)) return null;
+  }
+  const rest = b.rows.slice(k);
+  let rows;
+  const unida = rest.length ? unePartes(a.rows[a.rows.length - 1], rest[0]) : null;
+  if (unida) rows = a.rows.slice(0, -1).concat([unida], rest.slice(1));
+  else rows = a.rows.concat(rest);
+  if (k > 0) rows[0] = rows[0].replace("<w:trPr>", "<w:trPr><w:tblHeader/>");
+  return { ...a, rows, bottom: b.bottom };
+}
+
+function tableParts(bl, builder, availPt, imgXml, pageCtx, forzarMaterial = false) {
   const t = bl.table;
   const widthPt = t.bbox.x2 - t.bbox.x1;
   // tablas de material (RECURSOS MATERIALES / MATERIAL FUNGIBLE / NO FUNGIBLE): ocupan todo el ancho útil
   const r0 = t.cells.filter((c) => c.r <= 1);
   const hy1 = Math.min(...r0.map((c) => c.y1)), hy2 = Math.max(...r0.map((c) => c.y2));
   const cabeza = bl.texts.filter((x) => x.y - 0.3 * x.size >= hy1 - 1 && x.y - 0.3 * x.size <= hy2 + 1).map((x) => x.str).join(" ");
-  const esMaterial = /material\s+(no\s+)?fungible|recursos\s+materiales/i.test(cabeza);
+  const esMaterial = forzarMaterial || /material\s+(no\s+)?fungible|recursos\s+materiales/i.test(cabeza);
   const k = esMaterial ? availPt / widthPt : widthPt > availPt ? availPt / widthPt : 1;
   const colW = [];
   for (let c = 0; c < t.cols; c++) colW.push(Math.round((t.xs[c + 1] - t.xs[c]) * k * TW));
@@ -656,11 +828,20 @@ function tableXml(bl, builder, availPt, imgXml, pageCtx) {
     const h = Math.round((t.ys[r + 1] - t.ys[r]) * TW);
     rowsXml.push(`<w:tr><w:trPr><w:cantSplit/><w:trHeight w:val="${Math.max(h, 200)}" w:hRule="atLeast"/></w:trPr>${tcs}</w:tr>`);
   }
-  return (
-    `<w:tbl><w:tblPr><w:tblW w:w="${total}" w:type="dxa"/>${indent > 40 ? `<w:tblInd w:w="${indent}" w:type="dxa"/>` : ""}<w:tblBorders>${borders}</w:tblBorders><w:tblLayout w:type="fixed"/>` +
-    `<w:tblCellMar><w:top w:w="20" w:type="dxa"/><w:left w:w="${pad * TW}" w:type="dxa"/><w:bottom w:w="20" w:type="dxa"/><w:right w:w="${pad * TW}" w:type="dxa"/></w:tblCellMar></w:tblPr>` +
-    `<w:tblGrid>${colW.map((w) => `<w:gridCol w:w="${w}"/>`).join("")}</w:tblGrid>${rowsXml.join("")}</w:tbl>`
-  );
+  return {
+    open:
+      `<w:tbl><w:tblPr><w:tblW w:w="${total}" w:type="dxa"/>${indent > 40 ? `<w:tblInd w:w="${indent}" w:type="dxa"/>` : ""}<w:tblBorders>${borders}</w:tblBorders><w:tblLayout w:type="fixed"/>` +
+      `<w:tblCellMar><w:top w:w="20" w:type="dxa"/><w:left w:w="${pad * TW}" w:type="dxa"/><w:bottom w:w="20" w:type="dxa"/><w:right w:w="${pad * TW}" w:type="dxa"/></w:tblCellMar></w:tblPr>` +
+      `<w:tblGrid>${colW.map((w) => `<w:gridCol w:w="${w}"/>`).join("")}</w:tblGrid>`,
+    rows: rowsXml,
+    close: "</w:tbl>",
+    material: esMaterial,
+    colW,
+    indent,
+    cols: t.cols,
+    xs: t.xs,
+    bottom: bl.bottom,
+  };
 }
 
 /** XML de un grupo de páginas. Cada llamada usa el PlanningBuilder del planning (registra sus imágenes) */

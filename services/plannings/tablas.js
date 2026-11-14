@@ -625,10 +625,17 @@ const textoCelda = (c) => (c.lines || []).map((l) => (l.runs ? l.runs.map((x) =>
  */
 function diaDobleXml(grid, opts = {}) {
   const { numero = "", codigo = "", titulo = "", lluvia = false, banos = null, esLlegada = false, meta = null } = opts;
-  // rejilla: [A] [L1..L6] [D] [R1..R6]
-  const L = [643, 643, 643, 643, 644, 644];
-  const Rr = [683, 683, 683, 683, 684, 684];
-  const W = [840, ...L, 880, ...Rr];
+  // rejilla: [A] [L1..L6] [D] [R1..R6]. Ocupa todo el ancho útil de la página: las columnas de hora son lo más
+  // estrechas que permite su texto y el resto se reparte entre las columnas de actividad (cada actividad suma 2)
+  const { anchoUtil = 15308 } = opts;
+  const horaTextos = grid.slice(1).map((f) => (f[0] && f[0].lines && f[0].lines[0] && f[0].lines[0].text) || "");
+  const maxHora = horaTextos.reduce((m, t) => Math.max(m, t.length), 5);
+  const wHora = Math.min(1400, Math.max(720, Math.round(maxHora * 105 + 110)));
+  const mitad = Math.floor(anchoUtil / 2);
+  const reparte = (total, n) => Array.from({ length: n }, (_, i) => Math.floor(total / n) + (i < total % n ? 1 : 0));
+  const L = reparte(mitad - wHora, 6);
+  const Rr = reparte(anchoUtil - mitad - wHora, 6);
+  const W = [wHora, ...L, wHora, ...Rr];
   const NC = W.length;
   const sumW = (a, n) => W.slice(a, a + n).reduce((x, y) => x + y, 0);
   const horas = grid.slice(1);
@@ -777,6 +784,9 @@ function diaDobleXml(grid, opts = {}) {
   }
   if (meta) {
     meta.size = size;
+    meta.ancho = W.reduce((a, b) => a + b, 0);
+    meta.anchoUtil = anchoUtil;
+    meta.hora = wHora;
     meta.alto = alto;
     meta.maxAlto = MAX_ALTO;
     meta.cabe = alto <= MAX_ALTO;
@@ -785,7 +795,21 @@ function diaDobleXml(grid, opts = {}) {
   return tbl(W, rows, { jc: "center" });
 }
 
+/** Tabla de contactos de los monitores para la portada: Monitor | Correo | Teléfono (una fila por monitor) */
+function contactosXml(filas, { ancho = 9639, size = 10 } = {}) {
+  const wTel = Math.round(ancho * 0.2);
+  const wNom = Math.round(ancho * 0.36);
+  const W = [wNom, ancho - wNom - wTel, wTel];
+  const b = { top: { sz: 4, color: "7F7F7F" }, bottom: { sz: 4, color: "7F7F7F" }, left: { sz: 4, color: "7F7F7F" }, right: { sz: 4, color: "7F7F7F" } };
+  const mar = { l: 90, r: 90, t: 20, b: 20 };
+  const celda = (txt, i, o = {}) => tc(cp([{ text: txt, bold: !!o.bold }], { size, align: "left" }), { width: W[i], valign: "center", borders: b, mar, fill: o.fill });
+  const rows = [tr(["Monitor", "Correo electrónico", "Teléfono"].map((t, i) => celda(t, i, { bold: true, fill: "E7E6E6" })), { header: true })];
+  for (const f of filas) rows.push(tr([celda(f.nombre, 0, { bold: true }), celda(f.email, 1), celda(f.telefono, 2)]));
+  return tbl(W, rows, { jc: "center" });
+}
+
 module.exports = {
+  contactosXml,
   LIGHT,
   NIVELES,
   nivelDe,

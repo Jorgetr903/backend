@@ -278,9 +278,30 @@
         ])
       ]);
       var box = el("div", { class: "cat", id: "cat-" + c.id }, [cab, inp]);
+      if (c.id === "general") box.appendChild(selectoresGeneral(docs));
       docs.forEach(function (d) { box.appendChild(filaDoc(d, nombres)); });
       cont.appendChild(box);
     });
+  }
+  // Tres selectores de los archivos clave de «Información general»: tabla principal, tabla de turnos y contactos de monitores
+  function selectoresGeneral(docs) {
+    var xlsx = docs.filter(function (d) { return /xlsx$/i.test(d.tipo || ""); });
+    if (!xlsx.length) xlsx = docs;
+    var caja = el("div", { class: "doc", style: "flex-direction:column;align-items:stretch;gap:6px" });
+    [["principal", "Tabla principal", true], ["turnos", "Tabla de turnos", true], ["contactos", "Contactos de monitores (nombres, correos y teléfonos)", false]].forEach(function (r) {
+      var actual = docs.filter(function (d) { return d.rol === r[0]; });
+      var sel = el("select", { onchange: function () {
+        var o = {};
+        actual.forEach(function (d) { if (d.id !== sel.value) o[d.id] = { rol: "tabla" }; });
+        if (sel.value) o[sel.value] = { rol: r[0] };
+        if (Object.keys(o).length) parchear({ docs: o });
+      } });
+      if (!r[2]) sel.appendChild(el("option", { value: "", text: "— Sin archivo de contactos —" }));
+      else if (!actual.length) sel.appendChild(el("option", { value: "", text: "— Elige un archivo —" }));
+      xlsx.forEach(function (d) { var op = el("option", { value: d.id, text: d.nombre }); if (actual.length && actual[0].id === d.id) op.selected = true; sel.appendChild(op); });
+      caja.appendChild(el("div", { class: "fila" }, [el("span", { text: r[1] + ": ", style: "min-width:230px" }), sel]));
+    });
+    return caja;
   }
   function filaDoc(d, nombres) {
     var rev = estado.revision;
