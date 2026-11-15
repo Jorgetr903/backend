@@ -809,6 +809,7 @@ function contactosXml(filas, { ancho = 9639, size = 10 } = {}) {
 }
 
 module.exports = {
+  prim: { tc, tr, tbl, cp, lineasEstimadas },
   contactosXml,
   LIGHT,
   NIVELES,

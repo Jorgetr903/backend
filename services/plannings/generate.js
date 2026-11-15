@@ -22,6 +22,8 @@ const BDX = require("./basedatos");
 const { loadWorkbook } = require("./xlsxReader");
 const T = require("./tablas");
 const V = require("./validaciones");
+const TI = require("./tiendas");
+const { TIENDAS: TIENDAS_CFG } = require("./tablasConfig");
 const { parseOracionText } = require("./classify");
 
 const BASE_DIR = path.join(__dirname, "..", "..", "assets", "plannings", "base");
@@ -600,6 +602,28 @@ async function buildPlanning(session, model, planning, onWarn) {
     // orden Pequeños (rango 3) → Medianos (2) → Mayores (1) → otras hojas
     paginas.sort((a, b) => (T.NIVELES[b.nivel] ? T.NIVELES[b.nivel].rank : 0) - (T.NIVELES[a.nivel] ? T.NIVELES[a.nivel].rank : 0));
     let primera = true;
+    if (tipo === "grupos_nivel") {
+      // Plantilla de tiendas: A4 vertical, una tabla por nivel (continúa en otra página si no cabe)
+      const pg = TIENDAS_CFG.pagina;
+      const util = b.textWidth({ landscape: false, margins: pg });
+      const altoUtil = 16838 - pg.top - pg.bottom - 40;
+      for (const h of paginas) {
+        const t = TI.tiendasTablaXml(h, { util, altoUtil });
+        t.avisos.forEach(warn);
+        t.partes.forEach((xmlParte, i) => {
+          const bm = primera ? b.nextBookmark() : null;
+          b.addGenerated((bm ? R.anchor(bm) : "") + xmlParte, { landscape: false, margins: pg });
+          if (primera && indice) entries.push({ title: etiqueta, level: 1, bookmark: bm });
+          primera = false;
+          log.push({ type: tipo, landscape: false, docId: h.doc.id, categoria: h.doc.categoria, nivel: h.nivel, filas: h.bloques.reduce((n, x) => n + x.filas.length, 0), parte: i + 1, partes: t.partes.length, ancho: t.anchos.reduce((a, c) => a + c, 0), anchoUtil: util, titulo: t.titulo });
+        });
+        for (const bl of h.bloques) for (const f of bl.filas) tiendasConocidas.push([T.claveNombre(`${f.nombre} ${f.apellidos}`), h.nivel]);
+      }
+      // hojas con otra estructura (por ejemplo una tabla general de grupos de nivel): no se incluyen, y se avisa
+      for (const { f, nombre } of sueltas) warn(`${etiqueta}: la hoja «${nombre}» de «${f.doc.nombre}» no tiene la estructura de tienda (monitor / nombre / apellidos / observaciones) y no se incluye en el planning.`);
+      if (!paginas.length && !fuentesAbiertas.some((x) => x.docx)) warn(`No hay ninguna hoja de «${etiqueta}» para ${planning.nombre}; no se incluye.`);
+      return;
+    }
     for (const h of paginas) {
       const bm = primera ? b.nextBookmark() : null;
       const t = T.tiendasTablaXml(h, { altoUtil: 9400 });
@@ -906,15 +930,23 @@ async function verify(planning, model, built) {
     add("No hay tablas simuladas con tabulaciones", tabs === 0, tabs ? `${tabs} párrafos con 3 o más tabulaciones seguidas` : "");
   }
 
-  // tiendas: una tabla por página, Pequeños → Medianos → Mayores, sin tabla de «grupos de nivel» completo
+  // tiendas: una tabla por nivel (Pequeños → Medianos → Mayores) en A4 vertical, a todo el ancho útil, con su título; sin otras tablas de «grupos de nivel»
   {
-    const tiendas = built.log.filter((l) => l.type === "grupos_nivel" && l.nivel);
-    if (tiendas.length) {
+    const todas = built.log.filter((l) => l.type === "grupos_nivel");
+    const tiendas = todas.filter((l) => l.nivel);
+    const ajenas = todas.filter((l) => !l.nivel);
+    if (todas.length) {
       const rank = { pequenos: 1, medianos: 2, mayores: 3 };
       const ord = tiendas.map((t) => rank[t.nivel] || 9);
-      add("Tiendas: una tabla por página en el orden Pequeños → Medianos → Mayores", ord.every((r, i) => i === 0 || r >= ord[i - 1]) && tiendas.every((t) => t.cabe), tiendas.map((t) => `${t.nivel || "otra"} (${t.filas} filas, ${t.tam} pt)`).join(" · "));
+      const ordenOk = ord.every((r, i) => i === 0 || r >= ord[i - 1]);
+      add("Tiendas: una tabla por nivel en el orden Pequeños → Medianos → Mayores, sin otra tabla de grupos de nivel", ordenOk && ajenas.length === 0, ajenas.length ? "Hay una tabla de grupos de nivel que no es una tienda" : tiendas.filter((t) => t.parte === 1).map((t) => `${t.titulo} (${t.filas} filas, ${t.partes} pág.)`).join(" · "));
+      const mal = tiendas.filter((t) => t.landscape || Math.abs(t.ancho - t.anchoUtil) > 5);
+      add("Las tablas de tiendas van en A4 vertical y ocupan todo el ancho útil", mal.length === 0, mal.length ? `${mal.length} tablas con otro ancho u orientación` : "");
+      const sinTitulo = tiendas.filter((t) => t.parte === 1 && !xml.includes(esc(t.titulo)));
+      add("Cada tabla de tiendas lleva su título «NIVEL (Coordinador: …) - N»", sinTitulo.length === 0, sinTitulo.map((t) => t.titulo).join(", "));
     }
   }
+
 
   {
     const anchos = built.log.filter((l) => l.type === "horario" && l.meta && l.meta.ancho);
@@ -987,6 +1019,24 @@ async function verify(planning, model, built) {
     const pideMacuto = model.dias.some((d) => (d.items || []).some((i) => i.tipo === "fijo" && i.fijo === "macuto"));
     const macutos = built.log.filter((l) => l.type === "fijo" && l.special === "macuto").length;
     if (pideMacuto) add("Está el documento de preparación del macuto para la marcha (una sola vez)", macutos === 1, macutos === 1 ? "" : macutos === 0 ? `No se ha podido incluir: ${path.join(BASE_DIR, FIJOS_ASOCIADOS.macuto.archivo)}` : `Aparece ${macutos} veces`);
+    if (pideMacuto && macutos === 1) {
+      // el macuto va apaisado en dos páginas: 1.ª tablas de macuto y mochila pequeña; 2.ª «dejar preparado para la salida» y el resto del texto
+      let det = "";
+      let ok = false;
+      try {
+        const z = await JSZip.loadAsync(await fs.promises.readFile(path.join(BASE_DIR, FIJOS_ASOCIADOS.macuto.archivo)));
+        const dx = await z.file("word/document.xml").async("string");
+        const corte = dx.indexOf('w:br w:type="page"');
+        const saltos = (dx.match(/w:br w:type="page"/g) || []).length;
+        const antes = dx.slice(0, corte);
+        const despues = dx.slice(corte);
+        ok = /w:orient="landscape"/.test(dx) && saltos === 1 && antes.includes("MOCHILA PEQUEÑA") && !antes.includes("DEJAR PREPARADO") && despues.includes("DEJAR PREPARADO") && despues.includes("RECORDAR");
+        det = ok ? "" : "El documento del macuto no está apaisado en dos páginas con el reparto indicado";
+      } catch (e) {
+        det = `No se ha podido comprobar el documento del macuto: ${e.message}`;
+      }
+      add("El macuto va apaisado en dos páginas (macuto y mochila pequeña / dejar preparado para la salida y texto)", ok, det);
+    }
     const ev = built.log.map((l, i) => ({ l, i })).filter((x) => x.l.type === "fijo" && x.l.special === "evaluacion");
     if (model.dias.length) {
       const lluvias = new Set(model.dias.filter((d) => d.kind === "lluvia").map((d) => d.label));
