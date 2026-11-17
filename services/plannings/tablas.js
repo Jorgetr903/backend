@@ -137,19 +137,19 @@ const txtCelda = (ws, merges, r, c) => {
     .trim();
 };
 
+/** Fila «banner» de nivel: una sola celda con texto corto que nombra un nivel (PEQUEÑOS, MEDIANOS, MAYORES…) */
+const esBanner = (textos) => textos.length === 1 && textos[0].length <= 80 && !!nivelDe(textos[0]);
+
 /**
- * Lee una hoja «tienda / nombre / apellidos / observaciones».
- * @returns {{titulo:string, nivel:string|null, bloques:{grupo:string, filas:{nombre,apellidos,obs}[]}[]}|null}
+ * Lee las filas r1..r2 de una hoja como UNA tabla de tiendas: [título] [cabecera] monitor | nombre | apellidos | observaciones.
+ * c0 = primera columna con datos (el Excel puede tener la columna A vacía).
  */
-function parseTiendasHoja(ws) {
-  const merges = mergeIndex(ws);
-  const R = ws.rowCount;
-  const C = Math.min(ws.columnCount, 12);
-  let r0 = 1;
+function leerTiendasRango(ws, merges, { r1, r2, c0, C }) {
   const filaVacia = (r) => ![...Array(C)].some((_, i) => txtCelda(ws, merges, r, i + 1));
-  while (r0 <= R && filaVacia(r0)) r0++;
-  if (r0 > R) return null;
-  // título: la fila es solo un texto (combinado o en A)
+  let r0 = r1;
+  while (r0 <= r2 && filaVacia(r0)) r0++;
+  if (r0 > r2) return null;
+  // título: la fila es solo un texto (combinado o en la primera columna)
   const celdasFila = [...Array(C)].map((_, i) => txtCelda(ws, merges, r0, i + 1)).filter(Boolean);
   let titulo = "";
   let inicio = r0;
@@ -163,7 +163,7 @@ function parseTiendasHoja(ws) {
   let mapa = null;
   {
     let rc = inicio;
-    while (rc <= R && filaVacia(rc)) rc++;
+    while (rc <= r2 && filaVacia(rc)) rc++;
     const cab = [...Array(C)].map((_, i) => txtCelda(ws, merges, rc, i + 1));
     if (cab.filter((t) => PAL.test(t)).length >= 2) {
       const col = (re) => cab.findIndex((t) => re.test(norm(t)));
@@ -173,7 +173,7 @@ function parseTiendasHoja(ws) {
     }
   }
   let claveActual = null;
-  for (let r = inicio; r <= R; r++) {
+  for (let r = inicio; r <= r2; r++) {
     if (filaVacia(r)) continue;
     let a, b, c, obs, clave;
     if (mapa) {
@@ -191,10 +191,10 @@ function parseTiendasHoja(ws) {
       bloques[bloques.length - 1].filas.push({ nombre: b, apellidos: c, obs });
       continue;
     }
-    a = txtCelda(ws, merges, r, 1);
-    b = txtCelda(ws, merges, r, 2);
-    c = txtCelda(ws, merges, r, 3);
-    obs = [...Array(Math.max(0, C - 3))].map((_, i) => txtCelda(ws, merges, r, 4 + i)).filter(Boolean).join(" / ");
+    a = txtCelda(ws, merges, r, c0);
+    b = txtCelda(ws, merges, r, c0 + 1);
+    c = txtCelda(ws, merges, r, c0 + 2);
+    obs = [...Array(Math.max(0, C - (c0 + 2)))].map((_, i) => txtCelda(ws, merges, r, c0 + 3 + i)).filter(Boolean).join(" / ");
     if (/^(tienda|grupo)?\s*$/i.test(a) && /^nombre/i.test(b)) continue; // fila de cabecera de columnas
     if (!b && !c && !obs) continue;
     if (a || !bloques.length) bloques.push({ grupo: a, filas: [] });
@@ -203,6 +203,47 @@ function parseTiendasHoja(ws) {
   if (!bloques.length) return null;
   const nivel = nivelDe(titulo) || nivelDe(ws.name);
   return { titulo: titulo || ws.name, nivel, bloques };
+}
+
+/**
+ * Lee una hoja de tiendas y devuelve UNA tabla por nivel.
+ *  · Hoja de un solo nivel (título opcional arriba): una tabla, como siempre.
+ *  · Hoja con varios niveles (filas «MAYORES», «MEDIANOS», «PEQUEÑOS» de una sola celda): una tabla por banner.
+ * Tolera la columna A vacía (la tabla empieza en la primera columna con datos).
+ * @returns {{titulo:string, nivel:string|null, bloques:{grupo:string, filas:{nombre,apellidos,obs}[]}[]}[]}
+ */
+function parseTiendasHojas(ws) {
+  const merges = mergeIndex(ws);
+  const R = ws.rowCount;
+  const C = Math.min(ws.columnCount, 12);
+  const banners = [];
+  let c0 = C + 1;
+  for (let r = 1; r <= R; r++) {
+    const textos = [...Array(C)].map((_, i) => txtCelda(ws, merges, r, i + 1));
+    const llenas = textos.filter(Boolean);
+    if (!llenas.length) continue;
+    if (esBanner(llenas)) {
+      banners.push(r);
+      continue;
+    }
+    c0 = Math.min(c0, textos.findIndex(Boolean) + 1);
+  }
+  if (c0 > C) c0 = 1;
+  if (banners.length < 2) {
+    const h = leerTiendasRango(ws, merges, { r1: 1, r2: R, c0, C });
+    return h ? [h] : [];
+  }
+  const out = [];
+  banners.forEach((r, i) => {
+    const h = leerTiendasRango(ws, merges, { r1: r, r2: (banners[i + 1] || R + 1) - 1, c0, C });
+    if (h) out.push(h);
+  });
+  return out;
+}
+
+/** Compatibilidad: primera tabla de la hoja */
+function parseTiendasHoja(ws) {
+  return parseTiendasHojas(ws)[0] || null;
 }
 
 /**
@@ -815,6 +856,7 @@ module.exports = {
   NIVELES,
   nivelDe,
   parseTiendasHoja,
+  parseTiendasHojas,
   tiendasTablaXml,
   parseGruposTrabajoHoja,
   gruposTrabajoXml,

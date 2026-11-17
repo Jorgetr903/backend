@@ -3,7 +3,7 @@
 // Plantilla de las tablas de TIENDAS (distribución de los acampados por nivel y monitor).
 // Separa datos y diseño: los datos salen de la Base de Datos del año (parseTiendasHoja); el diseño está en
 // tablasConfig.js. Cada nivel tiene su tabla y su título «NIVEL (Coordinador: X) - N»; las filas de cada monitor
-// se agrupan en una sola celda combinada; la tabla ocupa el ancho útil de la página A4 vertical y, si no cabe,
+// se agrupan en una sola celda combinada; la tabla ocupa el ancho útil de la página A4 apaisada y, si no cabe,
 // continúa en otra página repitiendo título y encabezado, sin cortar filas ni reducir la letra.
 
 const { TIENDAS } = require("./tablasConfig");
@@ -55,7 +55,7 @@ function repartoAnchos(h, util) {
 function tituloTabla(h, nChicos) {
   const nivelNombre = C.nombreNivel[h.nivel] || String(h.titulo || "").replace(/\(.*$/, "").replace(/[-–]\s*\d+\s*$/, "").trim().toUpperCase();
   const { coordinador } = datosDeTitulo(h.titulo);
-  return `${nivelNombre}${coordinador ? ` (Coordinador: ${coordinador})` : ""} - ${nChicos}`;
+  return `${nivelNombre}${C.mostrarCoordinador && coordinador ? ` (Coordinador: ${coordinador})` : ""} - ${nChicos}`;
 }
 
 /**
@@ -73,7 +73,7 @@ function tiendasTablaXml(h, { util = 10206, altoUtil = 14500 } = {}) {
   const filasTotal = h.bloques.reduce((n, b) => n + b.filas.length, 0);
   const { numero } = datosDeTitulo(h.titulo);
   if (numero != null && numero !== filasTotal) avisos.push(`${h.titulo}: el título de la hoja dice ${numero} acampados pero hay ${filasTotal} filas; se usa ${filasTotal}.`);
-  if (!datosDeTitulo(h.titulo).coordinador) avisos.push(`${h.titulo}: no se encuentra el coordinador del nivel en el título de la hoja («… (Coordinador: Nombre) - N»); el título sale sin coordinador.`);
+  if (C.mostrarCoordinador && !datosDeTitulo(h.titulo).coordinador) avisos.push(`${h.titulo}: no se encuentra el coordinador del nivel en el título de la hoja («… (Coordinador: Nombre) - N»); el título sale sin coordinador.`);
   const titulo = tituloTabla(h, filasTotal);
 
   // altura estimada de cada fila (twips)
@@ -82,7 +82,7 @@ function tiendasTablaXml(h, { util = 10206, altoUtil = 14500 } = {}) {
     const n = Math.max(lineasEstimadas(x.nombre, W[1], f.nombre, 0.5), lineasEstimadas(x.apellidos, W[2], f.apellidos, 0.5), lineasEstimadas(x.obs, W[3], f.observaciones, 0.5));
     return Math.max(C.alturaMinFila, Math.round(n * lh(f.observaciones) + mar.t + mar.b + 20));
   };
-  const cabeza = C.alturaTitulo + C.alturaEncabezado;
+  const cabeza = C.alturaTitulo + (C.mostrarEncabezado ? C.alturaEncabezado : 0);
   const limite = Math.floor(altoUtil * C.aprovechamientoPagina);
   const libre = limite - cabeza;
   const minLineasMonitor = (b) => lineasEstimadas(String(b.grupo || "").toUpperCase(), W[0], f.monitor, 0.58);
@@ -94,15 +94,15 @@ function tiendasTablaXml(h, { util = 10206, altoUtil = 14500 } = {}) {
     if (actual.bloques.length) paginas.push(actual);
     actual = { bloques: [], alto: 0 };
   };
-  for (const b of h.bloques) {
+  for (const [bn, b] of h.bloques.entries()) {
     const hs = b.filas.map(altoFila);
     const altoBloque = Math.max(hs.reduce((a, c) => a + c, 0), Math.round(minLineasMonitor(b) * lh(f.monitor)) + mar.t + mar.b);
     if (actual.alto + altoBloque <= libre) {
-      actual.bloques.push({ grupo: b.grupo, filas: b.filas, hs });
+      actual.bloques.push({ bn, grupo: b.grupo, filas: b.filas, hs });
       actual.alto += altoBloque;
     } else if (altoBloque <= libre) {
       cierra();
-      actual.bloques.push({ grupo: b.grupo, filas: b.filas, hs });
+      actual.bloques.push({ bn, grupo: b.grupo, filas: b.filas, hs });
       actual.alto = altoBloque;
     } else {
       // bloque mayor que una página: se parte por filas; el monitor se repite al empezar cada trozo.
@@ -114,7 +114,7 @@ function tiendasTablaXml(h, { util = 10206, altoUtil = 14500 } = {}) {
         let acc = 0;
         const ini = i;
         while (i < b.filas.length && (acc + hs[i] <= hueco || i === ini)) acc += hs[i++];
-        actual.bloques.push({ grupo: b.grupo, filas: b.filas.slice(ini, i), hs: hs.slice(ini, i) });
+        actual.bloques.push({ bn, grupo: b.grupo, filas: b.filas.slice(ini, i), hs: hs.slice(ini, i) });
         actual.alto += acc;
         if (i < b.filas.length) cierra();
       }
@@ -132,14 +132,14 @@ function tiendasTablaXml(h, { util = 10206, altoUtil = 14500 } = {}) {
             span: 4,
             fill: pal.monitor,
             valign: "center",
-            borders: { top: borde(sz.exterior), left: borde(sz.exterior), right: borde(sz.exterior), bottom: borde(sz.interior) },
+            borders: { top: borde(sz.exterior), left: borde(sz.exterior), right: borde(sz.exterior), bottom: borde(sz.bloque) },
             mar,
           }),
         ],
         { height: C.alturaTitulo, header: true }
       )
     );
-    rows.push(
+    if (C.mostrarEncabezado) rows.push(
       tr(
         C.encabezados.map((t, i) =>
           tc(cp([{ text: t, bold: true }], { size: f.encabezado }), {
@@ -161,18 +161,19 @@ function tiendasTablaXml(h, { util = 10206, altoUtil = 14500 } = {}) {
         const top = primera ? borde(sz.bloque) : borde(sz.interior);
         const bottom = ultima ? (ultimoBloque ? borde(sz.exterior) : borde(sz.bloque)) : borde(sz.interior);
         const bd = (left, right) => ({ top, bottom, left, right });
+        const fondo = b.bn % 2 === 1 ? pal.fila : undefined; // bloques alternos: blanco / pastel (como el planning de referencia)
         const celdas = [
           tc(primera ? cp([{ text: String(b.grupo || "").toUpperCase(), bold: true }], { size: f.monitor, align: "center" }) : "", {
             width: W[0],
             vMerge: b.filas.length > 1 ? (primera ? "restart" : "continue") : undefined,
             fill: pal.monitor,
             valign: "center",
-            borders: bd(borde(sz.exterior), borde(sz.interior)),
+            borders: bd(borde(sz.exterior), borde(sz.bloque)),
             mar,
           }),
-          tc(cp(x.nombre, { size: f.nombre, align: "left" }), { width: W[1], fill: pal.fila, valign: "center", borders: bd(borde(sz.interior), borde(sz.interior)), mar }),
-          tc(cp(x.apellidos, { size: f.apellidos, align: "left" }), { width: W[2], fill: pal.fila, valign: "center", borders: bd(borde(sz.interior), borde(sz.interior)), mar }),
-          tc(cp(x.obs, { size: f.observaciones, align: "left" }), { width: W[3], fill: pal.fila, valign: "center", borders: bd(borde(sz.interior), borde(sz.exterior)), mar }),
+          tc(cp(x.nombre, { size: f.nombre, align: "left" }), { width: W[1], fill: fondo, valign: "center", borders: bd(borde(sz.bloque), borde(sz.interior)), mar }),
+          tc(cp(x.apellidos, { size: f.apellidos, align: "left" }), { width: W[2], fill: fondo, valign: "center", borders: bd(borde(sz.interior), borde(sz.interior)), mar }),
+          tc(cp(x.obs, { size: f.observaciones, align: "left" }), { width: W[3], fill: fondo, valign: "center", borders: bd(borde(sz.interior), borde(sz.exterior)), mar }),
         ];
         rows.push(tr(celdas, { height: b.hs[fi] }));
       });

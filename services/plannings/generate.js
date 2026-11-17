@@ -594,8 +594,14 @@ async function buildPlanning(session, model, planning, onWarn) {
         continue;
       }
       for (const nombre of f.nombres) {
-        const h = T.parseTiendasHoja(f.wb.getWorksheet(nombre));
-        if (h) paginas.push({ ...h, doc: f.doc, hoja: nombre });
+        let hs = T.parseTiendasHojas(f.wb.getWorksheet(nombre));
+        // hoja con varios niveles (banners MAYORES / MEDIANOS / PEQUEÑOS): el planning de un nivel solo lleva el suyo
+        if (tipo === "grupos_nivel" && planning.tipo === "nivel" && hs.length > 1) {
+          const key = (s) => normaliza(s).replace(/\s+/g, "").slice(0, 5);
+          const propias = hs.filter((h) => h.nivel && key(T.NIVELES[h.nivel].nombre) === key(planning.nivel));
+          if (propias.length) hs = propias;
+        }
+        if (hs.length) hs.forEach((h) => paginas.push({ ...h, doc: f.doc, hoja: nombre }));
         else sueltas.push({ f, nombre });
       }
     }
@@ -603,19 +609,20 @@ async function buildPlanning(session, model, planning, onWarn) {
     paginas.sort((a, b) => (T.NIVELES[b.nivel] ? T.NIVELES[b.nivel].rank : 0) - (T.NIVELES[a.nivel] ? T.NIVELES[a.nivel].rank : 0));
     let primera = true;
     if (tipo === "grupos_nivel") {
-      // Plantilla de tiendas: A4 vertical, una tabla por nivel (continúa en otra página si no cabe)
+      // Plantilla de tiendas: A4 apaisado, una tabla por nivel (continúa en otra página si no cabe)
       const pg = TIENDAS_CFG.pagina;
-      const util = b.textWidth({ landscape: false, margins: pg });
-      const altoUtil = 16838 - pg.top - pg.bottom - 40;
+      const apaisada = !!TIENDAS_CFG.apaisada;
+      const util = b.textWidth({ landscape: apaisada, margins: pg });
+      const altoUtil = (apaisada ? 11906 : 16838) - pg.top - pg.bottom - 40;
       for (const h of paginas) {
         const t = TI.tiendasTablaXml(h, { util, altoUtil });
         t.avisos.forEach(warn);
         t.partes.forEach((xmlParte, i) => {
           const bm = primera ? b.nextBookmark() : null;
-          b.addGenerated((bm ? R.anchor(bm) : "") + xmlParte, { landscape: false, margins: pg });
+          b.addGenerated((bm ? R.anchor(bm) : "") + xmlParte, { landscape: apaisada, margins: pg });
           if (primera && indice) entries.push({ title: etiqueta, level: 1, bookmark: bm });
           primera = false;
-          log.push({ type: tipo, landscape: false, docId: h.doc.id, categoria: h.doc.categoria, nivel: h.nivel, filas: h.bloques.reduce((n, x) => n + x.filas.length, 0), parte: i + 1, partes: t.partes.length, ancho: t.anchos.reduce((a, c) => a + c, 0), anchoUtil: util, titulo: t.titulo });
+          log.push({ type: tipo, landscape: apaisada, docId: h.doc.id, categoria: h.doc.categoria, nivel: h.nivel, filas: h.bloques.reduce((n, x) => n + x.filas.length, 0), parte: i + 1, partes: t.partes.length, ancho: t.anchos.reduce((a, c) => a + c, 0), anchoUtil: util, titulo: t.titulo });
         });
         for (const bl of h.bloques) for (const f of bl.filas) tiendasConocidas.push([T.claveNombre(`${f.nombre} ${f.apellidos}`), h.nivel]);
       }
@@ -930,7 +937,7 @@ async function verify(planning, model, built) {
     add("No hay tablas simuladas con tabulaciones", tabs === 0, tabs ? `${tabs} párrafos con 3 o más tabulaciones seguidas` : "");
   }
 
-  // tiendas: una tabla por nivel (Pequeños → Medianos → Mayores) en A4 vertical, a todo el ancho útil, con su título; sin otras tablas de «grupos de nivel»
+  // tiendas: una tabla por nivel (Pequeños → Medianos → Mayores) en A4 apaisado, a todo el ancho útil, con su título; sin otras tablas de «grupos de nivel»
   {
     const todas = built.log.filter((l) => l.type === "grupos_nivel");
     const tiendas = todas.filter((l) => l.nivel);
@@ -940,10 +947,10 @@ async function verify(planning, model, built) {
       const ord = tiendas.map((t) => rank[t.nivel] || 9);
       const ordenOk = ord.every((r, i) => i === 0 || r >= ord[i - 1]);
       add("Tiendas: una tabla por nivel en el orden Pequeños → Medianos → Mayores, sin otra tabla de grupos de nivel", ordenOk && ajenas.length === 0, ajenas.length ? "Hay una tabla de grupos de nivel que no es una tienda" : tiendas.filter((t) => t.parte === 1).map((t) => `${t.titulo} (${t.filas} filas, ${t.partes} pág.)`).join(" · "));
-      const mal = tiendas.filter((t) => t.landscape || Math.abs(t.ancho - t.anchoUtil) > 5);
-      add("Las tablas de tiendas van en A4 vertical y ocupan todo el ancho útil", mal.length === 0, mal.length ? `${mal.length} tablas con otro ancho u orientación` : "");
+      const mal = tiendas.filter((t) => t.landscape !== !!TIENDAS_CFG.apaisada || Math.abs(t.ancho - t.anchoUtil) > 5);
+      add("Las tablas de tiendas van en A4 apaisado y ocupan todo el ancho útil", mal.length === 0, mal.length ? `${mal.length} tablas con otro ancho u orientación` : "");
       const sinTitulo = tiendas.filter((t) => t.parte === 1 && !xml.includes(esc(t.titulo)));
-      add("Cada tabla de tiendas lleva su título «NIVEL (Coordinador: …) - N»", sinTitulo.length === 0, sinTitulo.map((t) => t.titulo).join(", "));
+      add("Cada tabla de tiendas lleva su título «NIVEL - N»", sinTitulo.length === 0, sinTitulo.map((t) => t.titulo).join(", "));
     }
   }
 

@@ -3,12 +3,17 @@ const assert = require("node:assert");
 const { TIENDAS } = require("../../services/plannings/tablasConfig");
 const TI = require("../../services/plannings/tiendas");
 
-const UTIL = 11906 - 850 - 850;
-const ALTO = 16838 - 1134 - 1200 - 40;
+const PG = TIENDAS.pagina; // A4 apaisado
+const UTIL = 16838 - PG.left - PG.right;
+const ALTO = 11906 - PG.top - PG.bottom - 40;
+
+test("las tablas de tiendas van en página apaisada", () => {
+  assert.strictEqual(TIENDAS.apaisada, true);
+});
 
 function hoja(nivel, bloques, titulo) {
   return {
-    titulo: titulo || `${nivel.toUpperCase()} (Coordinador: Marta) - ${bloques.reduce((n, b) => n + b[1], 0)}`,
+    titulo: titulo || `${nivel.toUpperCase()} - ${bloques.reduce((n, b) => n + b[1], 0)}`,
     nivel,
     bloques: bloques.map(([grupo, n, obs]) => ({
       grupo,
@@ -18,24 +23,30 @@ function hoja(nivel, bloques, titulo) {
 }
 const nTablas = (xml) => (xml.match(/<w:tbl>/g) || []).length;
 
-test("el título lleva nivel, coordinador y número real de acampados", () => {
+test("el título lleva nivel y número real de acampados, sin coordinador", () => {
   const r = TI.tiendasTablaXml(hoja("pequenos", [["Ana", 3], ["Luis", 2]]), { util: UTIL, altoUtil: ALTO });
-  assert.strictEqual(r.titulo, "PEQUEÑOS (Coordinador: Marta) - 5");
+  assert.strictEqual(r.titulo, "PEQUEÑOS - 5");
   assert.strictEqual(r.partes.length, 1);
   assert.deepStrictEqual(r.avisos, []);
 });
 
-test("avisa si el número del título no coincide con las filas o falta el coordinador", () => {
+test("avisa si el número del título no coincide con las filas", () => {
   const r = TI.tiendasTablaXml(hoja("mayores", [["Ana", 3]], "MAYORES - 9"), { util: UTIL, altoUtil: ALTO });
   assert.strictEqual(r.titulo, "MAYORES - 3");
   assert.ok(r.avisos.some((a) => /9 acampados/.test(a)));
-  assert.ok(r.avisos.some((a) => /coordinador/i.test(a)));
+  assert.ok(!r.avisos.some((a) => /coordinador/i.test(a)));
+});
+
+test("aunque el banner del Excel traiga un coordinador, el título no lo muestra", () => {
+  const r = TI.tiendasTablaXml(hoja("medianos", [["Ana", 3]], "MEDIANOS (Coordinador: Pepe) - 3"), { util: UTIL, altoUtil: ALTO });
+  assert.strictEqual(r.titulo, "MEDIANOS - 3");
+  assert.ok(!r.partes.join("").includes("Pepe"));
 });
 
 test("los colores salen de la configuración central y cada nivel usa los suyos", () => {
   for (const n of ["pequenos", "medianos", "mayores"]) {
     const { fila, monitor } = TIENDAS.paleta[n];
-    const xml = TI.tiendasTablaXml(hoja(n, [["Ana", 2]]), { util: UTIL, altoUtil: ALTO }).partes[0];
+    const xml = TI.tiendasTablaXml(hoja(n, [["Ana", 2], ["Luis", 2]]), { util: UTIL, altoUtil: ALTO }).partes[0]; // 2 bloques: el 2.º lleva el pastel
     assert.ok(xml.includes(`w:fill="${fila}"`) && xml.includes(`w:fill="${monitor}"`), n);
     assert.notStrictEqual(fila, monitor);
   }
@@ -45,6 +56,13 @@ test("anchos ≈ 18/20/29/33 % del ancho útil y la tabla ocupa todo el ancho", 
   const r = TI.tiendasTablaXml(hoja("medianos", [["Ana", 2]]), { util: UTIL, altoUtil: ALTO });
   assert.strictEqual(r.anchos.reduce((a, b) => a + b, 0), UTIL);
   [0.18, 0.2, 0.29, 0.33].forEach((p, i) => assert.ok(Math.abs(r.anchos[i] / UTIL - p) < 0.01));
+});
+
+test("bloques alternos: el primero sin relleno y el segundo en pastel; título y monitor en el color del nivel", () => {
+  const { fila, monitor } = TIENDAS.paleta.pequenos;
+  assert.deepStrictEqual([fila, monitor], ["DEEAF6", "BDD6EE"]);
+  const xml = TI.tiendasTablaXml(hoja("pequenos", [["Ana", 2], ["Luis", 2], ["Eva", 2]]), { util: UTIL, altoUtil: ALTO }).partes[0];
+  assert.strictEqual((xml.match(new RegExp(`w:fill="${fila}"`, "g")) || []).length, 6); // solo el 2.º bloque: 2 filas × (nombre, apellidos, observaciones)
 });
 
 test("el monitor es una celda combinada en vertical, en mayúsculas y sin repetir en cada fila", () => {
@@ -61,14 +79,14 @@ test("nunca se reduce la letra: todos los tamaños son los de la configuración"
   for (const u of usados) assert.ok(permitidos.has(u), `tamaño ${u} no permitido`);
 });
 
-test("si no cabe, se añade página (no se encoge), se repiten título y encabezado y los bloques pequeños no se parten", () => {
+test("si no cabe, se añade página (no se encoge), se repite el título y los bloques pequeños no se parten", () => {
   const bloques = Array.from({ length: 12 }, (_, i) => [`Monitor${i}`, 5, "Alergia a algo con texto bastante largo para ocupar varias líneas en la columna de observaciones y obligar a crecer la fila"]);
   const r = TI.tiendasTablaXml(hoja("mayores", bloques), { util: UTIL, altoUtil: ALTO });
   assert.ok(r.partes.length >= 2);
   r.partes.forEach((p) => {
     assert.ok(p.includes(r.titulo), "título repetido");
-    assert.ok(p.includes("MONITOR / RESPONSABLE"), "encabezado repetido");
-    assert.strictEqual((p.match(/<w:tblHeader\/>/g) || []).length, 2);
+    assert.ok(!p.includes("MONITOR / RESPONSABLE"), "sin fila de encabezado de columnas (como el planning de referencia)");
+    assert.strictEqual((p.match(/<w:tblHeader\/>/g) || []).length, 1); // solo la fila del título se repite
   });
   // cada monitor aparece en una sola página (bloques de 5 filas caben enteros)
   for (let i = 0; i < 12; i++) assert.strictEqual(r.partes.filter((p) => p.includes(`MONITOR${i}<`)).length, 1, `MONITOR${i}`);
