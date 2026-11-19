@@ -12,7 +12,7 @@ const { norm } = require("./textutil");
 const { loadWorkbook, plainText } = require("./xlsxReader");
 
 const ROLES_HOJA = [
-  { id: "grupos_nivel", nombre: "Grupos de nivel (tiendas, niños y alergias)", destinos: ["todos"] },
+  { id: "grupos_nivel", nombre: "Tiendas (niños y alergias)", destinos: ["todos"] }, // el id es interno; la tabla «Grupos de nivel» ya no existe
   { id: "grupos_trabajo", nombre: "Grupos de trabajo", destinos: ["todos"] },
   { id: "servicio", nombre: "Servicio del comedor", destinos: ["todos"] },
   { id: "enfermeria", nombre: "Enfermería", destinos: ["enfermeria", "director"] },
@@ -27,7 +27,9 @@ function rolPorNombre(nombre) {
   if (/coche|autobus|\bbus\b|transporte|vehiculo/.test(n)) return "transporte";
   if (/grupos? (de )?trabajo|\btrabajo\b/.test(n)) return "grupos_trabajo";
   if (/servicio|comedor|fregado/.test(n)) return "servicio";
-  if (/tienda|grupos? (de )?nivel|\bnivel\b|pequen|median|mayor|alergi/.test(n)) return "grupos_nivel";
+  // La hoja «Grupos de nivel» (niños por grupo) no se genera: se marca como «No incluir» sin que haya que hacerlo a mano
+  if (/grupos? (de )?nivel/.test(n) && !/tienda|alergi/.test(n)) return "ignorar";
+  if (/tienda|\bnivel\b|pequen|median|mayor|alergi/.test(n)) return "grupos_nivel";
   return null;
 }
 

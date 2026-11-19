@@ -310,7 +310,7 @@
     if (d.aviso) f.appendChild(el("span", { class: "ayuda", text: d.aviso }));
     if (d.categoria === "general") {
       var sel = el("select", { onchange: function () { var o = {}; o[d.id] = { rol: sel.value }; parchear({ docs: o }); } });
-      [["principal", "Tabla principal"], ["turnos", "Tabla de turnos"], ["contactos", "Contactos de monitores (portada)"], ["grupos_nivel", "Grupos de nivel (tiendas, niños y alergias)"], ["grupos_trabajo", "Grupos de trabajo"], ["servicio", "Servicio del comedor por grupo"], ["tabla", "Otra tabla"], ["documento", "Documento"]].forEach(function (p) {
+      [["principal", "Tabla principal"], ["turnos", "Tabla de turnos"], ["contactos", "Contactos de monitores (portada)"], ["grupos_nivel", "Tiendas (niños y alergias)"], ["grupos_trabajo", "Grupos de trabajo"], ["servicio", "Servicio del comedor por grupo"], ["tabla", "Otra tabla"], ["documento", "Documento"]].forEach(function (p) {
         var op = el("option", { value: p[0], text: p[1] }); if (d.rol === p[0]) op.selected = true; sel.appendChild(op);
       });
       f.appendChild(sel);
@@ -394,7 +394,7 @@
       c.appendChild(el("div", { class: "enf" }, [
         el("strong", { text: n.nombre }),
         chip(n.estado === "ok" ? (n.nivel || "ok") : "sin nivel", n.estado === "ok" ? "ok" : "PENDIENTE"),
-        n.estado === "ok" ? el("span", { class: "ayuda", text: n.via === "manual" ? "elegido a mano" : "encontrado en las tablas de grupos de nivel" }) : el("span", { class: "ayuda", text: n.motivo || "" }),
+        n.estado === "ok" ? el("span", { class: "ayuda", text: n.via === "manual" ? "elegido a mano" : "encontrado en las tiendas" }) : el("span", { class: "ayuda", text: n.motivo || "" }),
         el("span", { class: "ayuda", text: "Nivel:" }), sel
       ]));
     });

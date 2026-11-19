@@ -221,7 +221,7 @@ class PlanningBuilder {
   /**
    * Incorpora un documento Word completo al final del planning.
    * @param {Buffer} buffer contenido del .docx
-   * @param {object} opts {bookmark: {id,name}}  marcador para el índice
+   * @param {object} opts {bookmark: {id,name}, conservarFormato: boolean}  marcador para el índice; conservarFormato = no unificar la fuente
    */
   async addDocx(buffer, opts = {}) {
     const zip = await JSZip.loadAsync(buffer);
@@ -256,6 +256,8 @@ class PlanningBuilder {
 
     const src = ++this.counters.src;
     const prefix = `S${src}_`;
+    // Documentos fijos con formato propio (p. ej. el macuto): se conservan su letra y sus tamaños, sin pasar a Calibri Light 11
+    const norm = opts.conservarFormato ? (x) => x : normalizaFuentes;
 
     // 1. Limpiezas que no tienen sentido fuera del documento original
     this._stripUnsupported(body);
@@ -264,7 +266,7 @@ class PlanningBuilder {
     const relMap = await this._copyRelationships(zip, relsXml, doc);
 
     // 3. Estilos y numeración
-    const styleMap = this._copyStyles(stylesXml, numXml, doc, prefix);
+    const styleMap = this._copyStyles(stylesXml, numXml, doc, prefix, norm);
 
     // 4. Identificadores únicos de dibujos
     for (const dp of els(doc, "docPr", NS.wp)) dp.setAttribute("id", String(this.counters.docPr++));
@@ -278,7 +280,7 @@ class PlanningBuilder {
     // 7. Serializar el cuerpo
     let xml = ser(body);
     xml = xml.replace(/^<w:body[^>]*>/, "").replace(/<\/w:body>\s*$/, "");
-    this.chunks.push(this.normalizaFuentes(xml));
+    this.chunks.push(norm(xml));
     this.stats.docs++;
     return { styleMap, relMap };
   }
@@ -376,7 +378,7 @@ class PlanningBuilder {
    * Copia los estilos utilizados con prefijo propio y trae consigo los
    * valores por defecto del documento (docDefaults).
    */
-  _copyStyles(stylesXml, numXml, doc, prefix) {
+  _copyStyles(stylesXml, numXml, doc, prefix, norm = normalizaFuentes) {
     const styleMap = new Map();
     const numMap = new Map();
     const body = firstChild(doc.documentElement, "body");
@@ -459,7 +461,7 @@ class PlanningBuilder {
         if (v && used.has(v)) ps.setAttributeNS(W, "w:val", newId(v));
         else removeNode(ps);
       }
-      this.abstractNums.push(normalizaFuentes(ser(absClone)));
+      this.abstractNums.push(norm(ser(absClone)));
       const numClone = num.cloneNode(true);
       numClone.setAttributeNS(W, "w:numId", String(newNum));
       const ref = firstChild(numClone, "abstractNumId");
@@ -473,7 +475,7 @@ class PlanningBuilder {
     const ddRPr = docDefaults ? els(docDefaults, "rPr")[0] : null;
     this.styles.push(
       `<w:style w:type="paragraph" w:customStyle="1" w:styleId="${defaultsId}"><w:name w:val="${defaultsId}"/>` +
-        `<w:qFormat/>${ddPPr ? ser(ddPPr) : ""}${ddRPr ? normalizaFuentes(ser(ddRPr)) : ""}</w:style>`
+        `<w:qFormat/>${ddPPr ? ser(ddPPr) : ""}${ddRPr ? norm(ser(ddRPr)) : ""}</w:style>`
     );
 
     let hasNormal = false;
@@ -512,7 +514,7 @@ class PlanningBuilder {
       }
       styleMap.set(id, newId(id));
       if (defaultPara && id === defaultPara.getAttributeNS(W, "styleId")) hasNormal = true;
-      this.styles.push(normalizaFuentes(ser(clone)));
+      this.styles.push(norm(ser(clone)));
     }
     if (!hasNormal) {
       this.styles.push(
@@ -532,7 +534,7 @@ class PlanningBuilder {
         const nm = firstChild(clone, "name");
         if (nm) nm.setAttributeNS(W, "w:val", newId(id));
         for (const t of ["basedOn", "link", "next"]) removeNode(firstChild(clone, t));
-        this.styles.push(normalizaFuentes(ser(clone)));
+        this.styles.push(norm(ser(clone)));
         styleMap.set(id, newId(id));
       }
       tblDefaultId = newId(id);

@@ -23,11 +23,13 @@ const TIENDAS = {
     neutro: { fila: COLOR_NEUTRO, monitor: COLOR_NEUTRO_MONITOR },
   },
   nombreNivel: { pequenos: "PEQUEÑOS", medianos: "MEDIANOS", mayores: "MAYORES" },
-  // Reparto del ancho útil: monitor, nombre, apellidos, observaciones
-  anchos: [0.18, 0.2, 0.29, 0.33],
-  anchoMinObservaciones: 0.25, // las demás columnas pueden crecer a costa de esta si hay palabras largas
+  // Reparto del ancho útil: monitor, nombre, apellidos, observaciones. Proporciones del planning de referencia:
+  // las observaciones ocupan casi dos tercios para que las filas no se alarguen y cada nivel quepa en una página
+  anchos: [0.09, 0.09, 0.17, 0.65],
+  anchoMinObservaciones: 0.5, // las demás columnas pueden crecer a costa de esta si hay palabras largas
   // Tamaños de letra (pt), uniformes dentro de cada categoría
-  fuentes: { titulo: 12, encabezado: 9, monitor: 9.5, nombre: 9.5, apellidos: 9.5, observaciones: 9 },
+  // Mismo formato compacto para TODAS las tablas de tiendas (Pequeños, Medianos y Mayores), para que se vean iguales y cada nivel quepa en una página
+  fuentes: { titulo: 12, encabezado: 9, monitor: 9, nombre: 9, apellidos: 9, observaciones: 8 },
   // Grosor de los bordes (w:sz, octavos de punto)
   // exterior: contorno · bloque: separación entre monitores y vertical monitor|nombre · interior: filas de un mismo monitor
   bordes: { exterior: 12, interior: 4, bloque: 12, color: "000000" },
@@ -35,15 +37,15 @@ const TIENDAS = {
   mostrarEncabezado: false,
   // El título lleva solo «NIVEL - N». Con true añadiría «(Coordinador: X)» leído del banner del Excel
   mostrarCoordinador: false,
-  alturaMinFila: 300, // twips
+  alturaMinFila: 250, // twips
   alturaTitulo: 400,
   alturaEncabezado: 340,
-  margenCelda: { l: 70, r: 70, t: 20, b: 20 },
+  margenCelda: { l: 70, r: 70, t: 15, b: 15 },
   // Página A4 APAISADA (apaisada: false las pondría en vertical)
   apaisada: true,
-  pagina: { top: 1134, right: 765, bottom: 1200, left: 765, header: 511, footer: 960 },
+  pagina: { top: 900, right: 765, bottom: 1200, left: 765, header: 511, footer: 960 },
   // Se usa este porcentaje de la altura útil al repartir las filas entre páginas (margen para diferencias entre Word y LibreOffice)
-  aprovechamientoPagina: 0.93,
+  aprovechamientoPagina: 0.95,
   encabezados: ["MONITOR / RESPONSABLE", "NOMBRE", "APELLIDOS", "OBSERVACIONES MÉDICAS / INFORMACIÓN RELEVANTE"],
 };
 

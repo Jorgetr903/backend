@@ -52,10 +52,58 @@ test("los colores salen de la configuración central y cada nivel usa los suyos"
   }
 });
 
-test("anchos ≈ 18/20/29/33 % del ancho útil y la tabla ocupa todo el ancho", () => {
+test("anchos ≈ 9/9/17/65 % del ancho útil (observaciones lo más ancho posible) y la tabla ocupa todo el ancho", () => {
   const r = TI.tiendasTablaXml(hoja("medianos", [["Ana", 2]]), { util: UTIL, altoUtil: ALTO });
   assert.strictEqual(r.anchos.reduce((a, b) => a + b, 0), UTIL);
-  [0.18, 0.2, 0.29, 0.33].forEach((p, i) => assert.ok(Math.abs(r.anchos[i] / UTIL - p) < 0.01));
+  [0.09, 0.09, 0.17, 0.65].forEach((p, i) => assert.ok(Math.abs(r.anchos[i] / UTIL - p) < 0.01, `columna ${i}`));
+});
+
+test("un nivel de 30 acampados con observaciones largas cabe en una sola página", () => {
+  const largo = "Dermatitis atópica: hidratación diaria tras ducha, en caso de brote aplicar crema y avisar a la familia. Asma: tratamiento en cámara, 3 pulsaciones cada 6/8 horas si hay síntomas respiratorios intensos.";
+  const h = hoja("pequenos", [["SANDRA", 5, "Alergia frutos secos (1 pastilla) Aerius, lleva adrenalina por si acaso"], ["MARTA", 5, largo], ["MARCOS", 5, "Alergia al pescado y al kiwi"], ["JAIME", 5, largo], ["ROBERTO", 5, "Rinitis alérgica, dar antialérgico"], ["ALVARITO", 5, "Dolor de cabeza: ibuprofeno 5ml/8horas"]]);
+  const r = TI.tiendasTablaXml(h, { util: UTIL, altoUtil: ALTO });
+  assert.strictEqual(r.nChicos, 30);
+  assert.strictEqual(r.paginas, 1);
+});
+
+test("si no cabe ni así, el nivel sigue en varias páginas sin cortar filas", () => {
+  const h = hoja("pequenos", Array.from({ length: 12 }, (_, i) => [`M${i}`, 8, "Observación larga de prueba ".repeat(12)]));
+  const r = TI.tiendasTablaXml(h, { util: UTIL, altoUtil: ALTO });
+  assert.ok(r.paginas > 1);
+});
+
+test("todas las tablas de tiendas usan el mismo formato (letra y altura de fila), sea cual sea el nivel", () => {
+  const sizes = (xml) => [...new Set((xml.match(/w:sz w:val="(\d+)"/g) || []).map((m) => m.replace(/\D/g, "")))].sort().join(",");
+  const a = TI.tiendasTablaXml(hoja("pequenos", [["A", 5, "obs"], ["B", 5, "obs"], ["C", 5, "obs"]]), { util: UTIL, altoUtil: ALTO }).partes[0];
+  const b = TI.tiendasTablaXml(hoja("mayores", [["A", 2, "obs"], ["B", 2, "obs"]]), { util: UTIL, altoUtil: ALTO }).partes[0];
+  const c = TI.tiendasTablaXml(hoja("medianos", [["A", 3, "obs"], ["B", 3, "obs"]]), { util: UTIL, altoUtil: ALTO }).partes[0];
+  assert.strictEqual(sizes(a), sizes(b));
+  assert.strictEqual(sizes(b), sizes(c));
+  assert.ok(sizes(a).split(",").includes("16"), "observaciones a 8 pt");
+});
+
+test("la hoja «Grupos de nivel» se marca como «No incluir» y las tiendas siguen siendo tiendas", () => {
+  const B = require("../../services/plannings/basedatos");
+  assert.strictEqual(B.rolPorNombre("Grupos de nivel"), "ignorar");
+  assert.strictEqual(B.rolPorNombre("Tiendas con alergias"), "grupos_nivel");
+  assert.ok(!B.ROLES_HOJA.some((r) => /grupos de nivel/i.test(r.nombre)), "ya no se ofrece «Grupos de nivel» como opción");
+});
+
+test("el macuto conserva su letra al unirlo al planning (Calibri 10 pt) y el resto se unifica a Calibri Light 11", async () => {
+  const fs = require("fs");
+  const JSZip = require("jszip");
+  const { PlanningBuilder } = require("../../services/plannings/docxmerge");
+  const buf = fs.readFileSync(require("path").join(__dirname, "../../assets/plannings/base/preparacion-macuto.docx"));
+  const celda = async (conservarFormato) => {
+    const b = new PlanningBuilder({ year: 2026 });
+    await b.addDocx(buf, { conservarFormato });
+    const dx = await (await JSZip.loadAsync(await b.build())).file("word/document.xml").async("string");
+    return dx.slice(dx.indexOf("2 CAMISETAS") - 900, dx.indexOf("2 CAMISETAS"));
+  };
+  const con = await celda(true);
+  assert.ok(/w:sz w:val="20"/.test(con) && /w:ascii="Calibri"/.test(con));
+  const sin = await celda(false);
+  assert.ok(/w:sz w:val="22"/.test(sin) && /w:ascii="Calibri Light"/.test(sin));
 });
 
 test("bloques alternos: el primero sin relleno y el segundo en pastel; título y monitor en el color del nivel", () => {

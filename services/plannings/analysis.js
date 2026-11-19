@@ -188,7 +188,7 @@ async function resolverEnfermeros(session, cfg, niveles, baseDocs, nivelDocs) {
       continue;
     }
     if (!fuentes.length) {
-      items.push({ nombre, nivel: null, via: null, estado: "sin_datos", motivo: "Falta la Base de Datos CSP (o el Excel de grupos de nivel) para saber su grupo." });
+      items.push({ nombre, nivel: null, via: null, estado: "sin_datos", motivo: "Falta la Base de Datos CSP (o el Excel de tiendas) para saber su grupo." });
       continue;
     }
     const key = `${nombre}|${niveles.join(",")}|${fuentes.map((f) => `${f.doc.id}:${(f.hojas || []).join("/")}`).join(";")}`;
@@ -201,7 +201,7 @@ async function resolverEnfermeros(session, cfg, niveles, baseDocs, nivelDocs) {
     if (r.niveles.length === 1) items.push({ nombre, nivel: r.niveles[0], via: r.apariciones.find((a) => a.nivel)?.via || null, estado: "ok" });
     else if (r.niveles.length > 1) items.push({ nombre, nivel: null, via: null, estado: "ambiguo", candidatos: r.niveles, motivo: `Aparece en varios grupos de nivel (${r.niveles.join(", ")}). Elige el suyo.` });
     else if (r.encontrado) items.push({ nombre, nivel: null, via: null, estado: "sin_nivel", motivo: "Aparece en las tablas, pero no se sabe de qué nivel es esa hoja o sección. Elige su grupo." });
-    else items.push({ nombre, nivel: null, via: null, estado: "no_encontrado", motivo: "No aparece en las tablas de grupos de nivel (¿está escrito igual que en el Excel?). Elige su grupo." });
+    else items.push({ nombre, nivel: null, via: null, estado: "no_encontrado", motivo: "No aparece en las tiendas (¿está escrito igual que en el Excel?). Elige su grupo." });
   }
   const porNivel = new Map();
   for (const it of items) {

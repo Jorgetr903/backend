@@ -52,7 +52,8 @@ const BLOQUES = [
 
 /** Documentos fijos del planning original que se reutilizan tal cual (no se rehacen ni se resumen) */
 const FIJOS_ASOCIADOS = {
-  macuto: { archivo: "preparacion-macuto.docx", titulo: "Preparación del macuto para la marcha", motivo: "línea «Preparación macuto marcha larga» del horario" },
+  // conservarFormato: el macuto lleva su propia letra y tamaños (Calibri 10 pt); no se unifica a Calibri Light 11 como el resto
+  macuto: { archivo: "preparacion-macuto.docx", titulo: "Preparación del macuto para la marcha", motivo: "línea «Preparación macuto marcha larga» del horario", conservarFormato: true },
   evaluacion: { archivo: "anexo-evaluacion.docx", titulo: "ANEXO EVALUACIÓN", motivo: "antes de los días de lluvia" },
 };
 
@@ -302,7 +303,7 @@ function hojaDelPlanning(planning, niveles, todasLasHojas, warn = () => {}) {
   const algunaPorNivel = todasLasHojas.some((h) => niveles.some((n) => normaliza(h).replace(/\s+/g, "").includes(key(n))));
   if (!algunaPorNivel) {
     // las hojas no están separadas por nivel
-    if (todasLasHojas.length) warn("Las hojas de «grupos de nivel» no están separadas por nivel (no hay una hoja por nivel): este planning lleva todas las tiendas, con las alergias de los demás niveles. Separa las hojas por nivel si no quieres que se incluyan.");
+    if (todasLasHojas.length) warn("Las hojas de tiendas no están separadas por nivel (no hay una hoja por nivel): este planning lleva todas las tiendas, con las alergias de los demás niveles. Separa las hojas por nivel si no quieres que se incluyan.");
     return () => true;
   }
   return (h) => normaliza(h).replace(/\s+/g, "").includes(propia);
@@ -413,11 +414,11 @@ async function buildPlanning(session, model, planning, onWarn) {
     }
   };
 
-  const addDoc = async (doc, { title, level = 2, type, day = null, special = null, buffer = null, noIndex = false }) => {
+  const addDoc = async (doc, { title, level = 2, type, day = null, special = null, buffer = null, noIndex = false, conservarFormato = false }) => {
     if (doc && doc.ext === ".pdf") return addPdf(doc, { title, level, type, day, special, noIndex });
     const bm = b.nextBookmark();
     try {
-      await b.addDocx(buffer || (await readDoc(doc)), { bookmark: bm });
+      await b.addDocx(buffer || (await readDoc(doc)), { bookmark: bm, conservarFormato });
       if (!noIndex) entries.push({ title, level, bookmark: bm });
       log.push({ type, day, docId: doc ? doc.id : null, categoria: doc ? doc.categoria : "base", special, titulo: title });
       return true;
@@ -441,7 +442,7 @@ async function buildPlanning(session, model, planning, onWarn) {
       return false;
     }
     fijosPuestos.add(id);
-    return addDoc(null, { title: title || f.titulo, level, type: "fijo", day, special: id, buffer: buf, noIndex });
+    return addDoc(null, { title: title || f.titulo, level, type: "fijo", day, special: id, buffer: buf, noIndex, conservarFormato: !!f.conservarFormato });
   };
 
   // Logo del año (subido como imagen) → portada/índice y bloque de teléfonos
@@ -530,7 +531,7 @@ async function buildPlanning(session, model, planning, onWarn) {
     log.push({ type: "turnos", landscape: true });
   }
 
-  // — Grupos de nivel (tiendas), grupos de trabajo y servicio de comedor —
+  // — Tiendas, grupos de trabajo y servicio de comedor —
   const tablaGrupos = async (lista, etiqueta, tipo) => {
     for (const { doc: d, hojas } of lista) {
       if (d.ext === ".docx") {
@@ -601,6 +602,9 @@ async function buildPlanning(session, model, planning, onWarn) {
           const propias = hs.filter((h) => h.nivel && key(T.NIVELES[h.nivel].nombre) === key(planning.nivel));
           if (propias.length) hs = propias;
         }
+        // La tabla «Grupos de nivel» (niños por grupo, no son tiendas) no se genera nunca: ni se incluye ni se avisa
+        if (tipo === "grupos_nivel") hs = hs.filter((h) => h.nivel || !/grupos?\s+(de\s+)?nivel/.test(normaliza(`${h.titulo} ${nombre}`)));
+        if (tipo === "grupos_nivel" && !hs.length && /grupos?\s+(de\s+)?nivel/.test(normaliza(nombre))) continue;
         if (hs.length) hs.forEach((h) => paginas.push({ ...h, doc: f.doc, hoja: nombre }));
         else sueltas.push({ f, nombre });
       }
@@ -923,7 +927,17 @@ async function verify(planning, model, built) {
 
   // fuentes del cuerpo: ninguna de las que traían los documentos originales
   {
-    const intrusas = ["Montserrat", "Play", "Verdana", "Sim Hei", "SimHei", "Times New Roman", "Courier New"].filter((f) => new RegExp(`w:(ascii|hAnsi|cs|eastAsia)="${f}"`).test(xml + stylesXml + numberingXml));
+    // El macuto conserva su propia letra (conservarFormato): las fuentes que traiga ese documento se toleran, y solo tantas veces como aparecen en él
+    const macutoFuentes = {};
+    if (built.log.some((l) => l.special === "macuto")) {
+      try {
+        const zm = await JSZip.loadAsync(await fs.promises.readFile(path.join(BASE_DIR, FIJOS_ASOCIADOS.macuto.archivo)));
+        let txt = "";
+        for (const n of ["word/document.xml", "word/styles.xml", "word/numbering.xml"]) if (zm.file(n)) txt += await zm.file(n).async("string");
+        for (const f of ["Montserrat", "Play", "Verdana", "Sim Hei", "SimHei", "Times New Roman", "Courier New"]) macutoFuentes[f] = (txt.match(new RegExp(`w:(ascii|hAnsi|cs|eastAsia)="${f}"`, "g")) || []).length;
+      } catch (e) {}
+    }
+    const intrusas = ["Montserrat", "Play", "Verdana", "Sim Hei", "SimHei", "Times New Roman", "Courier New"].filter((f) => ((xml + stylesXml + numberingXml).match(new RegExp(`w:(ascii|hAnsi|cs|eastAsia)="${f}"`, "g")) || []).length > (macutoFuentes[f] || 0));
     add("Todo el cuerpo está en Calibri Light 11 (sin Montserrat, Play, Verdana ni otras fuentes sueltas)", !intrusas.length, intrusas.length ? `Quedan: ${intrusas.join(", ")}` : "");
   }
 
@@ -937,7 +951,7 @@ async function verify(planning, model, built) {
     add("No hay tablas simuladas con tabulaciones", tabs === 0, tabs ? `${tabs} párrafos con 3 o más tabulaciones seguidas` : "");
   }
 
-  // tiendas: una tabla por nivel (Pequeños → Medianos → Mayores) en A4 apaisado, a todo el ancho útil, con su título; sin otras tablas de «grupos de nivel»
+  // tiendas: una tabla por nivel (Pequeños → Medianos → Mayores) en A4 apaisado, a todo el ancho útil, con su título; sin otras tablas (la de «grupos de nivel» no se genera)
   {
     const todas = built.log.filter((l) => l.type === "grupos_nivel");
     const tiendas = todas.filter((l) => l.nivel);
@@ -946,7 +960,7 @@ async function verify(planning, model, built) {
       const rank = { pequenos: 1, medianos: 2, mayores: 3 };
       const ord = tiendas.map((t) => rank[t.nivel] || 9);
       const ordenOk = ord.every((r, i) => i === 0 || r >= ord[i - 1]);
-      add("Tiendas: una tabla por nivel en el orden Pequeños → Medianos → Mayores, sin otra tabla de grupos de nivel", ordenOk && ajenas.length === 0, ajenas.length ? "Hay una tabla de grupos de nivel que no es una tienda" : tiendas.filter((t) => t.parte === 1).map((t) => `${t.titulo} (${t.filas} filas, ${t.partes} pág.)`).join(" · "));
+      add("Tiendas: una tabla por nivel en el orden Pequeños → Medianos → Mayores, sin tabla de grupos de nivel", ordenOk && ajenas.length === 0, ajenas.length ? "Hay una tabla de grupos de nivel que no es una tienda" : tiendas.filter((t) => t.parte === 1).map((t) => `${t.titulo} (${t.filas} filas, ${t.partes} pág.)`).join(" · "));
       const mal = tiendas.filter((t) => t.landscape !== !!TIENDAS_CFG.apaisada || Math.abs(t.ancho - t.anchoUtil) > 5);
       add("Las tablas de tiendas van en A4 apaisado y ocupan todo el ancho útil", mal.length === 0, mal.length ? `${mal.length} tablas con otro ancho u orientación` : "");
       const sinTitulo = tiendas.filter((t) => t.parte === 1 && !xml.includes(esc(t.titulo)));
@@ -1073,7 +1087,7 @@ async function verify(planning, model, built) {
     const pos = orden.map((t) => built.log.findIndex((l) => l.type === t));
     const presentes = pos.filter((p) => p >= 0);
     const ok = presentes.every((p, i) => i === 0 || p > presentes[i - 1]);
-    add("Turnos → grupos de nivel → grupos de trabajo → servicio → planning general → primer día", ok, orden.filter((t, i) => pos[i] >= 0).join(" → "));
+    add("Turnos → tiendas → grupos de trabajo → servicio → planning general → primer día", ok, orden.filter((t, i) => pos[i] >= 0).join(" → "));
   }
 
   const cuenta = (s) => built.log.filter((l) => l.special === s && l.type === "actividad").length;

@@ -23,14 +23,20 @@ function datosDeTitulo(titulo) {
   return { coordinador: coord ? coord[1].trim() : "", numero: num ? +num[1] : null };
 }
 
+/** Texto de una celda. Si está vacía, la marca de párrafo lleva el mismo tamaño de letra: con el tamaño por defecto (11 pt) esas filas salían más altas */
+function celdaTexto(texto, size, align = "left") {
+  if (String(texto == null ? "" : texto).trim()) return cp(texto, { size, align });
+  const sz = Math.round(size * 2);
+  return `<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/><w:jc w:val="${align}"/><w:rPr><w:sz w:val="${sz}"/><w:szCs w:val="${sz}"/></w:rPr></w:pPr></w:p>`;
+}
+
 /** Palabra más larga (en caracteres) de un conjunto de textos */
 const palabraMax = (textos) => Math.max(0, ...textos.flatMap((t) => String(t || "").split(/\s+/).map((w) => w.length)));
 
 /** Reparto de anchos (twips) del ancho útil. Las columnas con palabras largas crecen a costa de observaciones */
-function repartoAnchos(h, util) {
+function repartoAnchos(h, util, f = C.fuentes, mar = C.margenCelda) {
   const W = C.anchos.map((p) => Math.round(util * p));
-  const f = C.fuentes;
-  const necesita = (letras, size, negrita) => Math.round(letras * size * 20 * (negrita ? 0.58 : 0.53)) + C.margenCelda.l + C.margenCelda.r + 40;
+  const necesita = (letras, size, negrita) => Math.round(letras * size * 20 * (negrita ? 0.58 : 0.53)) + mar.l + mar.r + 40;
   const filas = h.bloques.flatMap((b) => b.filas);
   const min = [
     necesita(palabraMax(h.bloques.map((b) => String(b.grupo || "").toUpperCase())), f.monitor, true),
@@ -64,11 +70,16 @@ function tituloTabla(h, nChicos) {
  * @param opts {util: ancho útil (twips), altoUtil: alto útil (twips)}
  * @returns {{partes:string[], titulo:string, nChicos:number, avisos:string[], anchos:number[]}}
  */
-function tiendasTablaXml(h, { util = 10206, altoUtil = 14500 } = {}) {
+function tiendasTablaXml(h, opts = {}) {
+  // Un único formato compacto para todos los niveles (ver TIENDAS en tablasConfig.js)
+  return construir(h, opts, { fuentes: C.fuentes, margenCelda: C.margenCelda, alturaMinFila: C.alturaMinFila, aprovechamiento: C.aprovechamientoPagina });
+}
+
+function construir(h, { util = 10206, altoUtil = 14500 } = {}, aj) {
   const pal = C.paleta[h.nivel] || C.paleta.neutro;
-  const f = C.fuentes;
-  const mar = C.margenCelda;
-  const W = repartoAnchos(h, util);
+  const f = aj.fuentes;
+  const mar = aj.margenCelda;
+  const W = repartoAnchos(h, util, f, mar);
   const avisos = [];
   const filasTotal = h.bloques.reduce((n, b) => n + b.filas.length, 0);
   const { numero } = datosDeTitulo(h.titulo);
@@ -80,10 +91,10 @@ function tiendasTablaXml(h, { util = 10206, altoUtil = 14500 } = {}) {
   const lh = (size) => size * 20 * 1.22;
   const altoFila = (x) => {
     const n = Math.max(lineasEstimadas(x.nombre, W[1], f.nombre, 0.5), lineasEstimadas(x.apellidos, W[2], f.apellidos, 0.5), lineasEstimadas(x.obs, W[3], f.observaciones, 0.5));
-    return Math.max(C.alturaMinFila, Math.round(n * lh(f.observaciones) + mar.t + mar.b + 20));
+    return Math.max(aj.alturaMinFila, Math.round(n * lh(f.observaciones) + mar.t + mar.b + 20));
   };
   const cabeza = C.alturaTitulo + (C.mostrarEncabezado ? C.alturaEncabezado : 0);
-  const limite = Math.floor(altoUtil * C.aprovechamientoPagina);
+  const limite = Math.floor(altoUtil * aj.aprovechamiento);
   const libre = limite - cabeza;
   const minLineasMonitor = (b) => lineasEstimadas(String(b.grupo || "").toUpperCase(), W[0], f.monitor, 0.58);
 
@@ -107,7 +118,7 @@ function tiendasTablaXml(h, { util = 10206, altoUtil = 14500 } = {}) {
     } else {
       // bloque mayor que una página: se parte por filas; el monitor se repite al empezar cada trozo.
       // Si en la página actual caben al menos 3 filas, se empieza ahí; si no, en una página nueva.
-      if (libre - actual.alto < 3 * Math.max(C.alturaMinFila, hs[0])) cierra();
+      if (libre - actual.alto < 3 * Math.max(aj.alturaMinFila, hs[0])) cierra();
       let i = 0;
       while (i < b.filas.length) {
         const hueco = libre - actual.alto;
@@ -171,9 +182,9 @@ function tiendasTablaXml(h, { util = 10206, altoUtil = 14500 } = {}) {
             borders: bd(borde(sz.exterior), borde(sz.bloque)),
             mar,
           }),
-          tc(cp(x.nombre, { size: f.nombre, align: "left" }), { width: W[1], fill: fondo, valign: "center", borders: bd(borde(sz.bloque), borde(sz.interior)), mar }),
-          tc(cp(x.apellidos, { size: f.apellidos, align: "left" }), { width: W[2], fill: fondo, valign: "center", borders: bd(borde(sz.interior), borde(sz.interior)), mar }),
-          tc(cp(x.obs, { size: f.observaciones, align: "left" }), { width: W[3], fill: fondo, valign: "center", borders: bd(borde(sz.interior), borde(sz.exterior)), mar }),
+          tc(celdaTexto(x.nombre, f.nombre), { width: W[1], fill: fondo, valign: "center", borders: bd(borde(sz.bloque), borde(sz.interior)), mar }),
+          tc(celdaTexto(x.apellidos, f.apellidos), { width: W[2], fill: fondo, valign: "center", borders: bd(borde(sz.interior), borde(sz.interior)), mar }),
+          tc(celdaTexto(x.obs, f.observaciones), { width: W[3], fill: fondo, valign: "center", borders: bd(borde(sz.interior), borde(sz.exterior)), mar }),
         ];
         rows.push(tr(celdas, { height: b.hs[fi] }));
       });
